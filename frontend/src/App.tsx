@@ -324,7 +324,7 @@ export default function App() {
     return Array.from(tagsSet).sort();
   }, [library]);
 
-  const autoCollectionsCount = allTags.length;
+  const activeTagsCount = allTags.length;
 
   const topCollection = useMemo(() => {
     if (library.length === 0) return "None";
@@ -630,8 +630,8 @@ export default function App() {
                 <span className="material-symbols-outlined">auto_awesome_motion</span>
               </div>
               <div>
-                <p className="font-headline-sm text-[20px] text-on-surface font-bold">{autoCollectionsCount}</p>
-                <p className="font-label-sm text-label-sm text-on-surface-variant">Auto Collections</p>
+                <p className="font-headline-sm text-[20px] text-on-surface font-bold">{activeTagsCount}</p>
+                <p className="font-label-sm text-label-sm text-on-surface-variant">Active Tags</p>
               </div>
             </div>
             <div className="h-8 w-px bg-outline-variant hidden lg:block"></div>
