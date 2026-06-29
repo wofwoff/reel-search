@@ -311,7 +311,7 @@ export default function App() {
 
   const [recallHits, setRecallHits] = useState<number>(() => {
     const val = localStorage.getItem("reel_search_recall_hits");
-    return val ? parseInt(val, 10) : 12;
+    return val ? parseInt(val, 10) : 0;
   });
 
   const allTags = useMemo(() => {
@@ -445,7 +445,18 @@ export default function App() {
     setError("");
     setSearching(true);
     try {
-      setResults(await searchReels(query.trim()));
+      const searchResults = await searchReels(query.trim());
+      setResults(searchResults);
+      
+      // Increment recall hits if we found a relevant match (score >= 0.70)
+      const hasHit = searchResults.some(r => r.score && r.score >= 0.70);
+      if (hasHit) {
+        setRecallHits((prev) => {
+          const next = prev + 1;
+          localStorage.setItem("reel_search_recall_hits", String(next));
+          return next;
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
     } finally {
