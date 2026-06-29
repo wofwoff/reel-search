@@ -77,7 +77,15 @@ def download_media(url: str) -> MediaDownload:
     if settings.yt_dlp_cookies_from_browser:
         options["cookiesfrombrowser"] = (settings.yt_dlp_cookies_from_browser,)
     elif settings.yt_dlp_cookie_file:
-        options["cookiefile"] = settings.yt_dlp_cookie_file
+        import os
+        cookie_path = settings.yt_dlp_cookie_file
+        if not os.path.exists(cookie_path):
+            # Fallback if the secret is mounted named after the secret resource itself
+            alt_path = "/secrets/reel-search-ig-cookies"
+            if os.path.exists(alt_path):
+                cookie_path = alt_path
+        if os.path.exists(cookie_path):
+            options["cookiefile"] = cookie_path
 
     try:
         with YoutubeDL(options) as ydl:
