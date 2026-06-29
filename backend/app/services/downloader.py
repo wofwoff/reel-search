@@ -1,4 +1,6 @@
 import logging
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -57,9 +59,6 @@ def download_media(url: str) -> MediaDownload:
         "restrictfilenames": True,
         "ignore_no_formats_error": True,
         "max_filesize": 250 * 1024 * 1024,
-        # Cloud Run's sandboxed filesystem can raise EINVAL on the .part->final
-        # os.replace() yt-dlp does after a download finishes; writing directly
-        # to the final filename skips that rename entirely.
         "nopart": True,
     }
 
@@ -82,7 +81,6 @@ def download_media(url: str) -> MediaDownload:
     if settings.yt_dlp_cookies_from_browser:
         options["cookiesfrombrowser"] = (settings.yt_dlp_cookies_from_browser,)
     elif settings.yt_dlp_cookie_file:
-        import os
         cookie_path = settings.yt_dlp_cookie_file
         if not os.path.exists(cookie_path):
             # Fallback if the secret is mounted named after the secret resource itself
@@ -90,7 +88,12 @@ def download_media(url: str) -> MediaDownload:
             if os.path.exists(alt_path):
                 cookie_path = alt_path
         if os.path.exists(cookie_path):
-            options["cookiefile"] = cookie_path
+            # yt-dlp writes updated cookies back to this path on close(). The
+            # production cookie file is a read-only Secret Manager volume mount,
+            # so copy it into the writable tempdir first.
+            writable_cookie_path = Path(tempdir.name) / "cookies.txt"
+            shutil.copyfile(cookie_path, writable_cookie_path)
+            options["cookiefile"] = str(writable_cookie_path)
 
     try:
         with YoutubeDL(options) as ydl:
