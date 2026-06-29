@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -56,6 +57,10 @@ def download_media(url: str) -> MediaDownload:
         "restrictfilenames": True,
         "ignore_no_formats_error": True,
         "max_filesize": 250 * 1024 * 1024,
+        # Cloud Run's sandboxed filesystem can raise EINVAL on the .part->final
+        # os.replace() yt-dlp does after a download finishes; writing directly
+        # to the final filename skips that rename entirely.
+        "nopart": True,
     }
 
     if is_youtube_url(url):
@@ -94,6 +99,7 @@ def download_media(url: str) -> MediaDownload:
                 raise MediaDownloadError("yt-dlp returned no metadata")
     except Exception as exc:
         tempdir.cleanup()
+        logging.exception("yt-dlp download failed for %s", url)
         msg = str(exc)
         if "Sign in to confirm" in msg or "not a bot" in msg:
             raise MediaDownloadError(
