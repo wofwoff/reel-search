@@ -1,7 +1,11 @@
 substitutions:
-  _REGION: asia-south1
+  _REGION: us-central1
   _REPO: cloud-run-source-deploy
   _SERVICE_ACCOUNT: reel-search-run@reel-search-500906.iam.gserviceaccount.com
+  _API_URL: https://reel-search-api-771696730702.us-central1.run.app
+  _FRONTEND_URL: https://reel-search-frontend-771696730702.us-central1.run.app
+  _SUPABASE_URL: https://jxerusovqqvpkibygrem.supabase.co
+  _SUPABASE_ANON_KEY: sb_publishable__jih2UywChZ9v3ZIiLwziw_xCBwR4af
 
 steps:
   - id: build-api
@@ -25,6 +29,10 @@ steps:
     entrypoint: npm
     args: ['run', 'build']
     dir: frontend
+    env:
+      - 'VITE_API_BASE_URL=${_API_URL}'
+      - 'VITE_SUPABASE_URL=${_SUPABASE_URL}'
+      - 'VITE_SUPABASE_ANON_KEY=${_SUPABASE_ANON_KEY}'
     waitFor: ['build-frontend-assets']
 
   - id: build-frontend
@@ -55,6 +63,7 @@ steps:
       - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/reel-search-api:$SHORT_SHA
       - --region=${_REGION}
       - --service-account=${_SERVICE_ACCOUNT}
+      - --update-env-vars=FRONTEND_ORIGIN=${_FRONTEND_URL}
     waitFor: ['push-api']
 
   - id: deploy-frontend
