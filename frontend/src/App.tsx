@@ -308,6 +308,10 @@ export default function App() {
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [userId, setUserId] = useState<string>("");
+  const [showShortcutGuide, setShowShortcutGuide] = useState(false);
+  const [copiedUserId, setCopiedUserId] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
 
   const [recallHits, setRecallHits] = useState<number>(() => {
     const val = localStorage.getItem("reel_search_recall_hits");
@@ -356,6 +360,14 @@ export default function App() {
     return "Analyze";
   }, [saveState]);
 
+  const shortcutEndpoint = "https://reel-search-api-771696730702.us-central1.run.app/api/reels/shortcut";
+
+  function copyToClipboard(text: string, setCopied: (v: boolean) => void) {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
   async function refreshLibrary() {
     try {
       const reels = await fetchReels();
@@ -380,6 +392,9 @@ export default function App() {
           if (!session) {
             await supabase.auth.signInAnonymously();
           } else {
+            if (session.user) {
+              setUserId(session.user.id);
+            }
             refreshLibrary();
           }
         }
@@ -398,8 +413,12 @@ export default function App() {
       if (active) {
         if (!session) {
           setIsAuthLoading(true);
+          setUserId("");
           await supabase.auth.signInAnonymously();
         } else {
+          if (session.user) {
+            setUserId(session.user.id);
+          }
           setIsAuthLoading(false);
           refreshLibrary();
         }
@@ -696,6 +715,74 @@ export default function App() {
                 </nav>
               </div>
             )}
+
+            {/* iOS/macOS Shortcut Guide */}
+            <div className="border border-outline-variant/35 rounded-lg p-4 bg-surface-container-low space-y-4">
+              <button 
+                onClick={() => setShowShortcutGuide(!showShortcutGuide)}
+                className="flex items-center justify-between w-full font-label-md text-label-md text-primary uppercase tracking-widest text-left"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">cell_tower</span>
+                  Shortcut Setup
+                </span>
+                <span className="material-symbols-outlined">
+                  {showShortcutGuide ? "expand_less" : "expand_more"}
+                </span>
+              </button>
+              {showShortcutGuide && (
+                <div className="space-y-4 pt-2 text-xs text-on-surface-variant animate-fade-in">
+                  <p className="font-body-md text-body-md text-[11px] leading-relaxed">
+                    Set up an Apple Shortcut to save URLs directly from your Share Sheet.
+                  </p>
+                  
+                  <div className="space-y-2">
+                    <p className="font-bold text-[10px] text-outline uppercase tracking-wider">1. Webhook Endpoint</p>
+                    <div className="flex items-center gap-1 bg-surface-container-high rounded px-2 py-1 font-mono text-[9px] truncate">
+                      <span className="truncate flex-grow">{shortcutEndpoint}</span>
+                      <button 
+                        onClick={() => copyToClipboard(shortcutEndpoint, setCopiedUrl)}
+                        className="text-primary hover:text-primary/80"
+                        type="button"
+                        title="Copy URL"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">
+                          {copiedUrl ? "check" : "content_copy"}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="font-bold text-[10px] text-outline uppercase tracking-wider">2. Your User ID</p>
+                    <div className="flex items-center gap-1 bg-surface-container-high rounded px-2 py-1 font-mono text-[9px]">
+                      <span className="truncate flex-grow">{userId || "Loading..."}</span>
+                      {userId && (
+                        <button 
+                          onClick={() => copyToClipboard(userId, setCopiedUserId)}
+                          className="text-primary hover:text-primary/80"
+                          type="button"
+                          title="Copy User ID"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">
+                            {copiedUserId ? "check" : "content_copy"}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-outline-variant/30 space-y-1.5 text-[10px]">
+                    <p className="font-bold text-outline uppercase tracking-wider">Shortcut Config:</p>
+                    <ul className="list-disc pl-4 space-y-1">
+                      <li>Set Shortcut input type to <strong>URLs</strong>.</li>
+                      <li>Use <strong>Get Contents of URL</strong> action set to <strong>POST</strong>.</li>
+                      <li>Add Form keys: <code>url</code> (input), <code>user_id</code> (above), and <code>token</code> (your secret).</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
           </aside>
 
           {/* Library Grid */}

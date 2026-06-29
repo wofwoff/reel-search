@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     embedding_model: str = "gemini-embedding-2"
     yt_dlp_cookies_from_browser: str = Field(default="", alias="YT_DLP_COOKIES_FROM_BROWSER")
     yt_dlp_cookie_file: str = Field(default="", alias="YT_DLP_COOKIE_FILE")
+    shortcut_token: str = Field(default="", alias="SHORTCUT_TOKEN")
     video_fps: float = 1.0
     video_end_offset_seconds: int = 80
 

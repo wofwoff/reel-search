@@ -204,6 +204,17 @@ async def save_reel(
             local_path.unlink(missing_ok=True)
 
 
+@app.post("/api/reels/shortcut", response_model=SaveResponse)
+async def save_reel_shortcut(
+    url: str = Form(...),
+    token: str = Form(...),
+    user_id: str = Form(...),
+) -> SaveResponse:
+    if not settings.shortcut_token or token != settings.shortcut_token:
+        raise HTTPException(status_code=401, detail="Invalid shortcut token")
+    return await save_reel(url=url, files=[], user_id=user_id)
+
+
 @app.post("/api/search", response_model=list[SearchResult])
 async def search_reels(
     payload: SearchRequest,
