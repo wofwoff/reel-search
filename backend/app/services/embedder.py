@@ -136,6 +136,7 @@ class VertexEmbeddingProvider:
             summary: str
             actionable_items: list[str]
             resources: list[Resource]
+            tags: list[str]
 
         parts = []
         import json
@@ -157,7 +158,8 @@ class VertexEmbeddingProvider:
             "2. A detailed summary explaining what the content is about across all files.\n"
             "3. A list of all useful actionable items/takeaways.\n"
             "4. A list of any external useful resources (such as GitHub repositories, URLs, documentation, "
-            "websites, or tools) explicitly mentioned or shown. If none are mentioned, return an empty list."
+            "websites, or tools) explicitly mentioned or shown. If none are mentioned, return an empty list.\n"
+            "5. A list of 2-5 relevant keyword tags/categories for this content (e.g. 'productivity', 'design', 'coding', 'finance', 'AI', 'wellness')."
         )
         parts.append(types.Part.from_text(text=prompt))
 
@@ -173,4 +175,4 @@ class VertexEmbeddingProvider:
         try:
             return json.loads(response.text)
         except Exception:
-            return {"title": "Reel Summary", "summary": response.text, "actionable_items": [], "resources": []}
+            return {"title": "Reel Summary", "summary": response.text, "actionable_items": [], "resources": [], "tags": []}

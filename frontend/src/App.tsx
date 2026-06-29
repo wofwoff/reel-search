@@ -21,22 +21,6 @@ function getPlatformName(url: string | undefined, fallback: string = "Instagram"
 
 function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClick: () => void }) {
   const title = reel.title || reel.caption || "Saved reel";
-  
-  // Categorize based on keywords or tags
-  const category = useMemo(() => {
-    const text = (reel.title + " " + reel.caption).toLowerCase();
-    if (text.includes("wellness") || text.includes("habit") || text.includes("ritual") || text.includes("mind") || text.includes("breath")) {
-      return "Wellness";
-    }
-    if (text.includes("creative") || text.includes("design") || text.includes("color") || text.includes("art") || text.includes("diagram")) {
-      return "Creative";
-    }
-    return "Productivity";
-  }, [reel]);
-
-  const categoryColor = category === "Wellness" ? "bg-tertiary/90 text-on-tertiary" :
-                        category === "Creative" ? "bg-primary-container/90 text-on-primary-container" :
-                        "bg-secondary/90 text-on-secondary";
 
   return (
     <div 
@@ -69,12 +53,6 @@ function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClic
             </span>
           </div>
         )}
-
-        <div className="absolute top-4 left-4">
-          <span className={`${categoryColor} backdrop-blur-sm px-4 py-1 rounded-full font-label-sm text-label-sm`}>
-            {category}
-          </span>
-        </div>
       </div>
 
       <div className="px-2 pb-2 space-y-3 flex-grow flex flex-col">
@@ -86,6 +64,15 @@ function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClic
           <p className="font-body-md text-body-md text-on-surface-variant line-clamp-3">
             {reel.caption}
           </p>
+        )}
+        {reel.tags && reel.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1 pt-2">
+            {reel.tags.map((tag) => (
+              <span key={tag} className="bg-primary/5 text-primary border border-primary/10 px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase">
+                {tag}
+              </span>
+            ))}
+          </div>
         )}
         <div className="pt-4 mt-auto flex items-center justify-between border-t border-outline-variant/30">
           <span className="font-label-sm text-label-sm text-outline">Saved {formatDate(reel.created_at)}</span>
@@ -227,6 +214,18 @@ function ReelModal({ reel, onClose, onDeleteSuccess }: { reel: Reel; onClose: ()
                   </div>
                 </div>
               )}
+              {reel.tags && reel.tags.length > 0 && (
+                <div>
+                  <p className="font-bold text-outline uppercase tracking-wider mb-1">Tags</p>
+                  <div className="flex flex-wrap gap-1">
+                    {reel.tags.map((tag) => (
+                      <span key={tag} className="bg-primary/5 text-primary border border-primary/10 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -306,7 +305,7 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
   const [selectedReel, setSelectedReel] = useState<Reel | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
 
@@ -315,45 +314,37 @@ export default function App() {
     return val ? parseInt(val, 10) : 12;
   });
 
-  const autoCollectionsCount = useMemo(() => {
-    if (library.length === 0) return 0;
-    const cats = new Set(library.map(reel => {
-      const text = ((reel.title || "") + " " + (reel.caption || "")).toLowerCase();
-      if (text.includes("wellness") || text.includes("habit") || text.includes("ritual") || text.includes("mind") || text.includes("breath")) {
-        return "Wellness";
+  const allTags = useMemo(() => {
+    const tagsSet = new Set<string>();
+    library.forEach((reel) => {
+      if (reel.tags) {
+        reel.tags.forEach((tag) => tagsSet.add(tag));
       }
-      if (text.includes("creative") || text.includes("design") || text.includes("color") || text.includes("art") || text.includes("diagram")) {
-        return "Creative";
-      }
-      return "Productivity";
-    }));
-    return cats.size;
+    });
+    return Array.from(tagsSet).sort();
   }, [library]);
+
+  const autoCollectionsCount = allTags.length;
 
   const topCollection = useMemo(() => {
     if (library.length === 0) return "None";
-    const counts: Record<string, number> = { Wellness: 0, Creative: 0, Productivity: 0 };
+    const counts: Record<string, number> = {};
     library.forEach((reel) => {
-      const text = ((reel.title || "") + " " + (reel.caption || "")).toLowerCase();
-      if (text.includes("wellness") || text.includes("habit") || text.includes("ritual") || text.includes("mind") || text.includes("breath")) {
-        counts.Wellness++;
-      } else if (text.includes("creative") || text.includes("design") || text.includes("color") || text.includes("art") || text.includes("diagram")) {
-        counts.Creative++;
-      } else {
-        counts.Productivity++;
+      if (reel.tags) {
+        reel.tags.forEach((tag) => {
+          counts[tag] = (counts[tag] || 0) + 1;
+        });
       }
     });
-    let top = "Productivity";
-    let max = counts.Productivity;
-    if (counts.Wellness > max) {
-      top = "Wellness";
-      max = counts.Wellness;
-    }
-    if (counts.Creative > max) {
-      top = "Creative";
-      max = counts.Creative;
-    }
-    return max > 0 ? top : "None";
+    let top = "None";
+    let max = 0;
+    Object.entries(counts).forEach(([tag, count]) => {
+      if (count > max) {
+        top = tag;
+        max = count;
+      }
+    });
+    return top;
   }, [library]);
 
   const saveLabel = useMemo(() => {
@@ -467,24 +458,11 @@ export default function App() {
     setResults((prev) => prev.filter((r) => r.id !== deletedId));
   }
 
-  // Group by category helper for filtering
+  // Filter by selected tag
   const filteredLibrary = useMemo(() => {
-    if (!selectedCategory) return library;
-    return library.filter((reel) => {
-      const text = (reel.title + " " + reel.caption).toLowerCase();
-      if (selectedCategory === "Wellness") {
-        return text.includes("wellness") || text.includes("habit") || text.includes("ritual") || text.includes("mind") || text.includes("breath");
-      }
-      if (selectedCategory === "Creative") {
-        return text.includes("creative") || text.includes("design") || text.includes("color") || text.includes("art") || text.includes("diagram");
-      }
-      if (selectedCategory === "Productivity") {
-        return !(text.includes("wellness") || text.includes("habit") || text.includes("ritual") || text.includes("mind") || text.includes("breath") ||
-                 text.includes("creative") || text.includes("design") || text.includes("color") || text.includes("art") || text.includes("diagram"));
-      }
-      return true;
-    });
-  }, [library, selectedCategory]);
+    if (!selectedTag) return library;
+    return library.filter((reel) => reel.tags && reel.tags.includes(selectedTag));
+  }, [library, selectedTag]);
 
   if (isAuthLoading) {
     return (
@@ -526,7 +504,7 @@ export default function App() {
                 href="#library-section" 
                 onClick={(e) => {
                   e.preventDefault();
-                  setSelectedCategory(null);
+                  setSelectedTag(null);
                   document.getElementById("library-section")?.scrollIntoView({ behavior: "smooth" });
                 }}
               >
@@ -677,47 +655,43 @@ export default function App() {
               <h3 className="font-label-md text-label-md text-primary mb-4 uppercase tracking-widest">Library</h3>
               <nav className="flex flex-col gap-1">
                 <button 
-                  onClick={() => setSelectedCategory(null)}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-full font-body-md transition-all text-left w-full ${!selectedCategory ? "bg-primary-container text-on-primary-container font-bold" : "hover:bg-surface-container-high text-on-surface-variant"}`}
+                  onClick={() => setSelectedTag(null)}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-full font-body-md transition-all text-left w-full ${!selectedTag ? "bg-primary-container text-on-primary-container font-bold" : "hover:bg-surface-container-high text-on-surface-variant"}`}
                 >
                   <span className="material-symbols-outlined">grid_view</span>
                   All Reels
                 </button>
               </nav>
             </div>
-            <div>
-              <h3 className="font-label-md text-label-md text-primary mb-4 uppercase tracking-widest">Categories</h3>
-              <nav className="flex flex-col gap-1">
-                <button 
-                  onClick={() => setSelectedCategory("Wellness")}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-full font-body-md transition-all text-left w-full ${selectedCategory === "Wellness" ? "bg-primary-container text-on-primary-container font-bold" : "hover:bg-surface-container-high text-on-surface-variant"}`}
-                >
-                  <span className="w-2 h-2 rounded-full bg-tertiary"></span>
-                  Wellness
-                </button>
-                <button 
-                  onClick={() => setSelectedCategory("Creative")}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-full font-body-md transition-all text-left w-full ${selectedCategory === "Creative" ? "bg-primary-container text-on-primary-container font-bold" : "hover:bg-surface-container-high text-on-surface-variant"}`}
-                >
-                  <span className="w-2 h-2 rounded-full bg-primary-container"></span>
-                  Creative
-                </button>
-                <button 
-                  onClick={() => setSelectedCategory("Productivity")}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-full font-body-md transition-all text-left w-full ${selectedCategory === "Productivity" ? "bg-primary-container text-on-primary-container font-bold" : "hover:bg-surface-container-high text-on-surface-variant"}`}
-                >
-                  <span className="w-2 h-2 rounded-full bg-secondary"></span>
-                  Productivity
-                </button>
-              </nav>
-            </div>
+            {allTags.length > 0 && (
+              <div>
+                <h3 className="font-label-md text-label-md text-primary mb-4 uppercase tracking-widest">Filter by Tag</h3>
+                <nav className="flex flex-col gap-1 max-h-[45vh] overflow-y-auto custom-scrollbar pr-1">
+                  {allTags.map((tag) => {
+                    const count = library.filter((r) => r.tags && r.tags.includes(tag)).length;
+                    return (
+                      <button 
+                        key={tag}
+                        onClick={() => setSelectedTag(selectedTag === tag ? null : tag)}
+                        className={`flex items-center justify-between px-4 py-2 rounded-full font-body-md transition-all text-left w-full text-xs ${selectedTag === tag ? "bg-primary-container text-on-primary-container font-bold" : "hover:bg-surface-container-high text-on-surface-variant"}`}
+                      >
+                        <span className="truncate mr-2 font-medium">#{tag}</span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${selectedTag === tag ? "bg-primary/25 text-on-primary-container" : "bg-surface-container-high text-on-surface-variant"}`}>
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </nav>
+              </div>
+            )}
           </aside>
 
           {/* Library Grid */}
           <div className="space-y-8">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 pb-4 border-b border-outline-variant/30">
               <h2 className="font-headline-md text-headline-md text-on-surface">
-                {selectedCategory ? `${selectedCategory} Collection` : "Your Archived Insights"}
+                {selectedTag ? `#${selectedTag} Reels` : "Your Archived Insights"}
               </h2>
               
               {/* Semantic search row */}

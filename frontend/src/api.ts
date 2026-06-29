@@ -14,6 +14,7 @@ export type Reel = {
   summary?: string | null;
   actionable_items?: string | null;
   resources?: string | null;
+  tags?: string[] | null;
 };
 
 export type SearchResult = Reel & {

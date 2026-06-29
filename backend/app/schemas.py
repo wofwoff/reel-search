@@ -27,6 +27,7 @@ class ReelOut(BaseModel):
     summary: str | None = None
     actionable_items: str | None = None
     resources: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class SearchRequest(BaseModel):

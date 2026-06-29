@@ -160,6 +160,7 @@ async def save_reel(
         summary_val = None
         actionable_items_val = None
         resources_val = None
+        tags_val = []
         try:
             summary_data = await run_in_threadpool(
                 get_embedder().generate_summary,
@@ -170,6 +171,7 @@ async def save_reel(
             summary_val = summary_data.get("summary")
             actionable_items_val = json.dumps(summary_data.get("actionable_items", [])) if "actionable_items" in summary_data else None
             resources_val = json.dumps(summary_data.get("resources", [])) if "resources" in summary_data else None
+            tags_val = summary_data.get("tags") or []
         except Exception:
             pass
 
@@ -185,6 +187,7 @@ async def save_reel(
             embedding=embedding,
             embedding_model=settings.embedding_model,
             user_id=user_id,
+            tags=tags_val,
             ingest_status="saved",
             gcs_uri=gcs_uri,
             summary=summary_val,

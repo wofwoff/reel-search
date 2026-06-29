@@ -33,6 +33,7 @@ def _reel_from_row(row: dict[str, Any]) -> ReelOut:
         summary=row.get("summary"),
         actionable_items=row.get("actionable_items"),
         resources=row.get("resources"),
+        tags=row.get("tags") or [],
     )
 
 
@@ -82,6 +83,7 @@ class ReelRepository:
         embedding: Sequence[float],
         embedding_model: str,
         user_id: str,
+        tags: list[str] = None,
         ingest_status: str = "saved",
         gcs_uri: str | None = None,
         summary: str | None = None,
@@ -105,15 +107,17 @@ class ReelRepository:
                   summary,
                   actionable_items,
                   resources,
-                  user_id
+                  user_id,
+                  tags
                 )
-                values (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (canonical_url, user_id)
                 do update set source_url = excluded.source_url,
                               gcs_uri = excluded.gcs_uri,
                               summary = excluded.summary,
                               actionable_items = excluded.actionable_items,
-                              resources = excluded.resources
+                              resources = excluded.resources,
+                              tags = excluded.tags
                 returning *
                 """,
                 (
@@ -131,6 +135,7 @@ class ReelRepository:
                     actionable_items,
                     resources,
                     user_id,
+                    tags or [],
                 ),
             ).fetchone()
         if not row:
