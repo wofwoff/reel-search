@@ -11,3 +11,4 @@ coverage/
 backend/tmp/
 
 *.tsbuildinfo
+backend/instagram-cookies.txt

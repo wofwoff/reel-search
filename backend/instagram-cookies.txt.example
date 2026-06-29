@@ -1,0 +1,4 @@
+# Netscape HTTP Cookie File
+# Export your own Instagram session cookies (e.g. via the "Get cookies.txt" browser
+# extension) and save them locally as backend/instagram-cookies.txt — never commit
+# the real file. In production this is mounted from Secret Manager instead.

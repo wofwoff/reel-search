@@ -14,7 +14,8 @@ COPY . .
 
 # Environment defaults
 ENV PORT=8080
-ENV YT_DLP_COOKIE_FILE=/app/instagram-cookies.txt
+# Cookie file is mounted from Secret Manager at runtime (Cloud Run secret volume), not baked into the image.
+ENV YT_DLP_COOKIE_FILE=/secrets/instagram-cookies.txt
 
 EXPOSE 8080
 
