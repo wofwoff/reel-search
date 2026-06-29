@@ -45,8 +45,12 @@ Two independently deployed services, no shared code or monorepo tooling:
 
 ## Deployment
 
-`backend/Dockerfile` and `frontend/Dockerfile` (nginx serving the Vite `dist/`) are Cloud Run-shaped (`PORT`/`8080`, no other Cloud Run-specific files), but **there is no IaC or CI for deployment in this repo** — no `cloudbuild.yaml`, no GitHub Actions workflow, no deploy script. Deploys are presumably manual `gcloud run deploy` invocations; treat any deployment automation as something to set up, not something to find.
+Both services run on Cloud Run in project `reel-search-500906`, region `us-central1` (chosen to match the GCS bucket and Vertex AI location, both `us`):
+- `reel-search-api` — backend, secrets (`DATABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, the Instagram cookie file) injected from Secret Manager, runs as the dedicated `reel-search-run` service account (scoped to the one GCS bucket + `aiplatform.user`, not the broad default compute SA).
+- `reel-search-frontend` — nginx serving the Vite build; `VITE_API_BASE_URL`/`VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` are baked in at build time (see `cloudbuild.yaml` substitutions), not runtime-configurable.
+
+CI/CD: [cloudbuild.yaml](cloudbuild.yaml) builds and deploys both services on every push to `master`, via a Cloud Build trigger (`reel-search-deploy`) connected to `github.com/wofwoff/reel-search` through a Cloud Build GitHub connection (`reel-search-github`). The trigger runs as a dedicated `reel-search-builder` service account, not the default Cloud Build SA. If you change `frontend`'s required build-time env vars, update the `_API_URL`/`_SUPABASE_URL`/`_SUPABASE_ANON_KEY` substitutions in `cloudbuild.yaml` — a build that silently omits one will deploy a frontend pointing at `localhost`, and Cloud Run won't flag it as unhealthy since it's a client-side break.
 
 ## Known issue
 
-`backend/instagram-cookies.txt` contains real `yt-dlp`-exported Instagram session cookies and is committed to git, and the backend `Dockerfile` copies it straight into the image. Treat this as a live credential, not a fixture — don't add more secrets to tracked files, and prefer passing cookies in via env (`YT_DLP_COOKIE_FILE`/`YT_DLP_COOKIES_FROM_BROWSER` in `config.py`) or a mounted secret rather than committing them.
+`backend/instagram-cookies.txt` contains a real Instagram session and must never be committed — it's gitignored/dockerignored and loaded from the `reel-search-ig-cookies` Secret Manager secret as a mounted volume in production (`YT_DLP_COOKIE_FILE=/secrets/instagram-cookies.txt`). Locally, keep your own copy on disk at that path (see `backend/instagram-cookies.txt.example`).
