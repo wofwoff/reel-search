@@ -313,7 +313,8 @@ export default function App() {
   const [copiedUserId, setCopiedUserId] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
-  const [syncToken, setSyncToken] = useState("");
+  const [syncAccessToken, setSyncAccessToken] = useState("");
+  const [syncRefreshToken, setSyncRefreshToken] = useState("");
   const [pastedSyncCode, setPastedSyncCode] = useState("");
   const [syncError, setSyncError] = useState("");
   const [syncSuccess, setSyncSuccess] = useState(false);
@@ -394,18 +395,28 @@ export default function App() {
     const initAuth = async () => {
       try {
         const urlParams = new URLSearchParams(window.location.search);
-        const syncTokenParam = urlParams.get("sync");
+        const accessTokenParam = urlParams.get("access_token");
+        const refreshTokenParam = urlParams.get("refresh_token") || urlParams.get("sync");
         
-        if (syncTokenParam) {
+        if (refreshTokenParam) {
           setIsAuthLoading(true);
-          const { error } = await supabase.auth.setSession({
-            access_token: "",
-            refresh_token: syncTokenParam
-          });
+          let error = null;
+          if (accessTokenParam) {
+            const res = await supabase.auth.setSession({
+              access_token: accessTokenParam,
+              refresh_token: refreshTokenParam
+            });
+            error = res.error;
+          } else {
+            const res = await supabase.auth.refreshSession({
+              refresh_token: refreshTokenParam
+            });
+            error = res.error;
+          }
           if (error) {
             console.error("Failed to import sync session:", error);
           }
-          // Clean the URL by removing the query param
+          // Clean the URL by removing the query params
           window.history.replaceState({}, document.title, window.location.pathname);
         }
 
@@ -815,10 +826,12 @@ export default function App() {
                   setSyncSuccess(false);
                   try {
                     const { data: { session } } = await supabase.auth.getSession();
-                    if (session?.refresh_token) {
-                      setSyncToken(session.refresh_token);
+                    if (session) {
+                      setSyncAccessToken(session.access_token);
+                      setSyncRefreshToken(session.refresh_token);
                     } else {
-                      setSyncToken("");
+                      setSyncAccessToken("");
+                      setSyncRefreshToken("");
                     }
                   } catch (e) {
                     console.error("Failed to load sync session", e);
@@ -979,11 +992,11 @@ export default function App() {
                   Scan this QR code with your iPhone camera to instantly open and sync this exact library in Safari.
                 </p>
                 
-                {syncToken ? (
+                {syncRefreshToken ? (
                   <div className="flex justify-center p-4 bg-white rounded-lg border border-outline-variant/30 w-fit mx-auto shadow-sm">
                     <img 
                       src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
-                        `${window.location.origin}${window.location.pathname}?sync=${syncToken}`
+                        `${window.location.origin}${window.location.pathname}?access_token=${syncAccessToken}&refresh_token=${syncRefreshToken}`
                       )}`} 
                       alt="Sync QR Code"
                       className="w-[180px] h-[180px]"
@@ -1004,12 +1017,12 @@ export default function App() {
                 
                 <div className="flex items-center gap-2 bg-surface-container-high rounded px-3 py-2 font-mono text-xs">
                   <span className="truncate flex-grow">
-                    {syncToken ? `${window.location.origin}${window.location.pathname}?sync=${syncToken}` : "Loading..."}
+                    {syncRefreshToken ? `${window.location.origin}${window.location.pathname}?access_token=${syncAccessToken}&refresh_token=${syncRefreshToken}` : "Loading..."}
                   </span>
-                  {syncToken && (
+                  {syncRefreshToken && (
                     <button 
                       onClick={() => {
-                        const link = `${window.location.origin}${window.location.pathname}?sync=${syncToken}`;
+                        const link = `${window.location.origin}${window.location.pathname}?access_token=${syncAccessToken}&refresh_token=${syncRefreshToken}`;
                         copyToClipboard(link, setCopiedSyncLink);
                       }}
                       className="text-primary hover:text-primary/80 shrink-0"
@@ -1037,23 +1050,34 @@ export default function App() {
                     setSyncError("");
                     setSyncSuccess(false);
 
-                    // Parse token if full URL was pasted
+                    // Parse tokens if full URL was pasted
                     let token = pastedSyncCode.trim();
+                    let accessToken = "";
                     try {
-                      if (token.includes("?sync=")) {
+                      if (token.includes("?")) {
                         const urlObj = new URL(token);
-                        token = urlObj.searchParams.get("sync") || token;
+                        token = urlObj.searchParams.get("refresh_token") || urlObj.searchParams.get("sync") || token;
+                        accessToken = urlObj.searchParams.get("access_token") || "";
                       }
                     } catch (e) {
                       // Ignore parsing error, fallback to using raw pasted text
                     }
 
                     try {
-                      const { error: sessionError } = await supabase.auth.setSession({
-                        access_token: "",
-                        refresh_token: token
-                      });
-                      if (sessionError) throw sessionError;
+                      let error = null;
+                      if (accessToken) {
+                        const res = await supabase.auth.setSession({
+                          access_token: accessToken,
+                          refresh_token: token
+                        });
+                        error = res.error;
+                      } else {
+                        const res = await supabase.auth.refreshSession({
+                          refresh_token: token
+                        });
+                        error = res.error;
+                      }
+                      if (error) throw error;
                       setSyncSuccess(true);
                       setPastedSyncCode("");
                       setTimeout(() => {
