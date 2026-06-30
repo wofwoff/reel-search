@@ -312,6 +312,12 @@ export default function App() {
   const [showShortcutGuide, setShowShortcutGuide] = useState(false);
   const [copiedUserId, setCopiedUserId] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const [syncToken, setSyncToken] = useState("");
+  const [pastedSyncCode, setPastedSyncCode] = useState("");
+  const [syncError, setSyncError] = useState("");
+  const [syncSuccess, setSyncSuccess] = useState(false);
+  const [copiedSyncLink, setCopiedSyncLink] = useState(false);
 
   const [recallHits, setRecallHits] = useState<number>(() => {
     const val = localStorage.getItem("reel_search_recall_hits");
@@ -387,6 +393,22 @@ export default function App() {
 
     const initAuth = async () => {
       try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const syncTokenParam = urlParams.get("sync");
+        
+        if (syncTokenParam) {
+          setIsAuthLoading(true);
+          const { error } = await supabase.auth.setSession({
+            access_token: "",
+            refresh_token: syncTokenParam
+          });
+          if (error) {
+            console.error("Failed to import sync session:", error);
+          }
+          // Clean the URL by removing the query param
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
         const { data: { session } } = await supabase.auth.getSession();
         if (active) {
           if (!session) {
@@ -783,6 +805,36 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {/* Sync Devices Guide */}
+            <div className="border border-outline-variant/35 rounded-lg p-4 bg-surface-container-low space-y-4">
+              <button 
+                onClick={async () => {
+                  setShowSyncModal(true);
+                  setSyncError("");
+                  setSyncSuccess(false);
+                  try {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    if (session?.refresh_token) {
+                      setSyncToken(session.refresh_token);
+                    } else {
+                      setSyncToken("");
+                    }
+                  } catch (e) {
+                    console.error("Failed to load sync session", e);
+                  }
+                }}
+                className="flex items-center justify-between w-full font-label-md text-label-md text-primary uppercase tracking-widest text-left"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">sync</span>
+                  Sync Devices
+                </span>
+                <span className="material-symbols-outlined">
+                  chevron_right
+                </span>
+              </button>
+            </div>
           </aside>
 
           {/* Library Grid */}
@@ -898,6 +950,154 @@ export default function App() {
           onClose={() => setSelectedReel(null)} 
           onDeleteSuccess={() => handleReelDelete(selectedReel.id)} 
         />
+      )}
+
+      {showSyncModal && (
+        <div className="fixed inset-0 bg-on-background/40 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fade-in" onClick={() => setShowSyncModal(false)}>
+          <div 
+            className="bg-surface rounded-lg border border-outline-variant/50 max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-fade-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="px-6 py-4 border-b border-outline-variant/30 flex justify-between items-center bg-surface-container-low">
+              <div>
+                <h2 className="font-headline-sm text-on-surface font-bold">Sync Devices</h2>
+                <p className="text-xs text-on-surface-variant font-medium mt-1">Access this library on your phone or other browsers.</p>
+              </div>
+              <button 
+                className="p-2 hover:bg-primary/5 rounded-full transition-all text-on-surface-variant hover:text-primary" 
+                onClick={() => setShowSyncModal(false)}
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </header>
+
+            <div className="p-6 overflow-y-auto space-y-6 custom-scrollbar text-sm">
+              {/* Generate Sync Link / Code section */}
+              <div className="space-y-4">
+                <h3 className="font-bold text-xs uppercase tracking-wider text-primary">1. Scan QR Code on your Phone</h3>
+                <p className="text-xs text-on-surface-variant leading-relaxed">
+                  Scan this QR code with your iPhone camera to instantly open and sync this exact library in Safari.
+                </p>
+                
+                {syncToken ? (
+                  <div className="flex justify-center p-4 bg-white rounded-lg border border-outline-variant/30 w-fit mx-auto shadow-sm">
+                    <img 
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
+                        `${window.location.origin}${window.location.pathname}?sync=${syncToken}`
+                      )}`} 
+                      alt="Sync QR Code"
+                      className="w-[180px] h-[180px]"
+                    />
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-on-surface-variant">
+                    Generating secure token...
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-outline-variant/30 pt-4 space-y-3">
+                <h3 className="font-bold text-xs uppercase tracking-wider text-primary">2. Share Sync Link</h3>
+                <p className="text-xs text-on-surface-variant leading-relaxed">
+                  Copy and send this link to your phone or paste it in another browser:
+                </p>
+                
+                <div className="flex items-center gap-2 bg-surface-container-high rounded px-3 py-2 font-mono text-xs">
+                  <span className="truncate flex-grow">
+                    {syncToken ? `${window.location.origin}${window.location.pathname}?sync=${syncToken}` : "Loading..."}
+                  </span>
+                  {syncToken && (
+                    <button 
+                      onClick={() => {
+                        const link = `${window.location.origin}${window.location.pathname}?sync=${syncToken}`;
+                        copyToClipboard(link, setCopiedSyncLink);
+                      }}
+                      className="text-primary hover:text-primary/80 shrink-0"
+                      type="button"
+                      title="Copy Link"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">
+                        {copiedSyncLink ? "check" : "content_copy"}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="border-t border-outline-variant/30 pt-4 space-y-3">
+                <h3 className="font-bold text-xs uppercase tracking-wider text-primary">3. Import a Sync Code / Link</h3>
+                <p className="text-xs text-on-surface-variant leading-relaxed">
+                  Already have a Sync Link or Token from another device? Paste it here to load that library:
+                </p>
+
+                <form 
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (!pastedSyncCode.trim()) return;
+                    setSyncError("");
+                    setSyncSuccess(false);
+
+                    // Parse token if full URL was pasted
+                    let token = pastedSyncCode.trim();
+                    try {
+                      if (token.includes("?sync=")) {
+                        const urlObj = new URL(token);
+                        token = urlObj.searchParams.get("sync") || token;
+                      }
+                    } catch (e) {
+                      // Ignore parsing error, fallback to using raw pasted text
+                    }
+
+                    try {
+                      const { error: sessionError } = await supabase.auth.setSession({
+                        access_token: "",
+                        refresh_token: token
+                      });
+                      if (sessionError) throw sessionError;
+                      setSyncSuccess(true);
+                      setPastedSyncCode("");
+                      setTimeout(() => {
+                        setShowSyncModal(false);
+                        setSyncSuccess(false);
+                      }, 1500);
+                    } catch (err) {
+                      setSyncError(err instanceof Error ? err.message : "Invalid sync token");
+                    }
+                  }}
+                  className="space-y-3"
+                >
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      placeholder="Paste Sync Link or Token here..."
+                      value={pastedSyncCode}
+                      onChange={(e) => setPastedSyncCode(e.target.value)}
+                      className="flex-grow bg-surface-container-high border border-outline-variant focus:ring-primary rounded px-4 py-2 text-xs outline-none"
+                    />
+                    <button 
+                      type="submit"
+                      className="bg-primary text-on-primary px-5 py-2 rounded-full font-label-md text-label-md bouncy-interaction shadow-md hover:bg-primary/95 transition-all text-xs"
+                    >
+                      Import
+                    </button>
+                  </div>
+                  {syncSuccess && (
+                    <p className="text-tertiary font-bold text-xs flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                      Library synced successfully!
+                    </p>
+                  )}
+                  {syncError && (
+                    <p className="text-error font-bold text-xs flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[16px]">error</span>
+                      {syncError}
+                    </p>
+                  )}
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
