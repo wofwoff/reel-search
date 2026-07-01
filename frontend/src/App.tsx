@@ -397,6 +397,12 @@ export default function App() {
               refresh_token: refreshTokenParam
             });
             error = res.error;
+            if (error) {
+              const refreshRes = await supabase.auth.refreshSession({
+                refresh_token: refreshTokenParam
+              });
+              error = refreshRes.error;
+            }
           } else {
             const res = await supabase.auth.refreshSession({
               refresh_token: refreshTokenParam
