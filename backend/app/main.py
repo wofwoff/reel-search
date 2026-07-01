@@ -8,18 +8,21 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.schemas import HealthResponse, SaveResponse, SearchRequest, SearchResult, ReelOut
+from app.schemas import CollectionOut, HealthResponse, SaveResponse, SearchRequest, SearchResult, ReelOut
 from app.services.auth import get_current_user_id
 from app.services.db import DatabaseError, ReelRepository
 from app.services.embedder import EmbeddingError, VertexEmbeddingProvider
 from app.services.downloader import MediaDownloadError, download_media
 from app.services.storage import GcsStorage, StorageError, guess_mime_type
 from app.services.url_utils import canonicalize_url, is_instagram_url, is_youtube_url
+from app.services.collections import build_collections
 
 settings = get_settings()
 
 app = FastAPI(title="Reel Search API", version="0.1.0")
 allowed_origins = [origin.strip() for origin in settings.frontend_origin.split(",") if origin.strip()]
+allowed_origins.extend(["capacitor://localhost", "http://localhost"])
+allowed_origins = list(set(allowed_origins))
 allow_credentials = "*" not in allowed_origins
 
 app.add_middleware(
@@ -41,6 +44,11 @@ def get_embedder() -> VertexEmbeddingProvider:
 
 def get_storage() -> GcsStorage:
     return GcsStorage(settings)
+
+
+def recluster_user_collections(repo: ReelRepository, user_id: str) -> None:
+    reels = repo.list_collection_source_reels(user_id)
+    repo.replace_collections(user_id, build_collections(reels))
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -67,6 +75,29 @@ def health() -> HealthResponse:
 def list_reels(user_id: str = Depends(get_current_user_id)) -> list[ReelOut]:
     try:
         return get_repository().list_reels(user_id=user_id)
+    except DatabaseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/collections", response_model=list[CollectionOut])
+def list_collections(user_id: str = Depends(get_current_user_id)) -> list[CollectionOut]:
+    repo = get_repository()
+    try:
+        collections = repo.list_collections(user_id=user_id)
+        if not collections:
+            recluster_user_collections(repo, user_id)
+            collections = repo.list_collections(user_id=user_id)
+        return collections
+    except DatabaseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/collections/recluster", response_model=list[CollectionOut])
+async def recluster_collections(user_id: str = Depends(get_current_user_id)) -> list[CollectionOut]:
+    repo = get_repository()
+    try:
+        await run_in_threadpool(recluster_user_collections, repo, user_id)
+        return await run_in_threadpool(repo.list_collections, user_id)
     except DatabaseError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -160,7 +191,6 @@ async def save_reel(
         summary_val = None
         actionable_items_val = None
         resources_val = None
-        tags_val = []
         try:
             summary_data = await run_in_threadpool(
                 get_embedder().generate_summary,
@@ -171,7 +201,6 @@ async def save_reel(
             summary_val = summary_data.get("summary")
             actionable_items_val = json.dumps(summary_data.get("actionable_items", [])) if "actionable_items" in summary_data else None
             resources_val = json.dumps(summary_data.get("resources", [])) if "resources" in summary_data else None
-            tags_val = summary_data.get("tags") or []
         except Exception:
             pass
 
@@ -187,13 +216,13 @@ async def save_reel(
             embedding=embedding,
             embedding_model=settings.embedding_model,
             user_id=user_id,
-            tags=tags_val,
             ingest_status="saved",
             gcs_uri=gcs_uri,
             summary=summary_val,
             actionable_items=actionable_items_val,
             resources=resources_val,
         )
+        await run_in_threadpool(recluster_user_collections, repo, user_id)
         return SaveResponse(reel=reel, duplicate=False, ingest_source=ingest_source)
     except (DatabaseError, EmbeddingError, StorageError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -241,6 +270,8 @@ async def delete_reel(
         success = await run_in_threadpool(repo.delete_reel, reel_id, user_id)
         if not success:
             raise HTTPException(status_code=404, detail="Reel not found")
+
+        await run_in_threadpool(recluster_user_collections, repo, user_id)
 
         if reel.gcs_uri:
             try:

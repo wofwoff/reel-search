@@ -14,11 +14,22 @@ export type Reel = {
   summary?: string | null;
   actionable_items?: string | null;
   resources?: string | null;
-  tags?: string[] | null;
+  collection_id?: string | null;
+  collection_name?: string | null;
 };
 
 export type SearchResult = Reel & {
   score: number;
+};
+
+export type Collection = {
+  id: string;
+  name: string;
+  description?: string | null;
+  keywords: string[];
+  reel_count: number;
+  updated_at: string;
+  reels: Reel[];
 };
 
 export type Health = {
@@ -58,6 +69,19 @@ export async function fetchHealth(): Promise<Health> {
 export async function fetchReels(): Promise<Reel[]> {
   const headers = await getAuthHeaders();
   return parseResponse<Reel[]>(await fetch(`${API_BASE}/api/reels`, { headers }));
+}
+
+export async function fetchCollections(): Promise<Collection[]> {
+  const headers = await getAuthHeaders();
+  return parseResponse<Collection[]>(await fetch(`${API_BASE}/api/collections`, { headers }));
+}
+
+export async function reclusterCollections(): Promise<Collection[]> {
+  const headers = await getAuthHeaders();
+  return parseResponse<Collection[]>(await fetch(`${API_BASE}/api/collections/recluster`, {
+    method: "POST",
+    headers
+  }));
 }
 
 export async function saveReel(url: string, files?: File[] | File | null): Promise<{ reel: Reel; duplicate: boolean; ingest_source: "url" | "upload" }> {

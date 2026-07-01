@@ -27,7 +27,8 @@ class ReelOut(BaseModel):
     summary: str | None = None
     actionable_items: str | None = None
     resources: str | None = None
-    tags: list[str] = Field(default_factory=list)
+    collection_id: UUID | None = None
+    collection_name: str | None = None
 
 
 class SearchRequest(BaseModel):
@@ -43,3 +44,13 @@ class SaveResponse(BaseModel):
     reel: ReelOut
     duplicate: bool = False
     ingest_source: Literal["url", "upload"]
+
+
+class CollectionOut(BaseModel):
+    id: UUID
+    name: str
+    description: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    reel_count: int
+    updated_at: datetime
+    reels: list[ReelOut] = Field(default_factory=list)

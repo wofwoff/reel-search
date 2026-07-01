@@ -6,8 +6,9 @@ from uuid import UUID
 import psycopg
 from psycopg.rows import dict_row
 
+from app.services.collections import CollectionDraft
 from app.config import Settings
-from app.schemas import ReelOut, SearchResult
+from app.schemas import CollectionOut, ReelOut, SearchResult
 
 
 class DatabaseError(RuntimeError):
@@ -33,8 +34,20 @@ def _reel_from_row(row: dict[str, Any]) -> ReelOut:
         summary=row.get("summary"),
         actionable_items=row.get("actionable_items"),
         resources=row.get("resources"),
-        tags=row.get("tags") or [],
+        collection_id=row.get("collection_id"),
+        collection_name=row.get("collection_name"),
     )
+
+
+REEL_SELECT = """
+select
+  r.*,
+  c.id as collection_id,
+  c.name as collection_name
+from reels r
+left join reel_collection_items ci on ci.reel_id = r.id
+left join reel_collections c on c.id = ci.collection_id
+"""
 
 
 class ReelRepository:
@@ -51,7 +64,7 @@ class ReelRepository:
             return None
         with self._connect() as conn:
             row = conn.execute(
-                "select * from reels where canonical_url = %s and user_id = %s limit 1",
+                REEL_SELECT + " where r.canonical_url = %s and r.user_id = %s limit 1",
                 (canonical_url, user_id),
             ).fetchone()
         return _reel_from_row(row) if row else None
@@ -59,7 +72,7 @@ class ReelRepository:
     def find_by_id(self, reel_id: UUID, user_id: str) -> ReelOut | None:
         with self._connect() as conn:
             row = conn.execute(
-                "select * from reels where id = %s and (user_id = %s or user_id is null) limit 1",
+                REEL_SELECT + " where r.id = %s and (r.user_id = %s or r.user_id is null) limit 1",
                 (reel_id, user_id),
             ).fetchone()
         return _reel_from_row(row) if row else None
@@ -83,7 +96,6 @@ class ReelRepository:
         embedding: Sequence[float],
         embedding_model: str,
         user_id: str,
-        tags: list[str] = None,
         ingest_status: str = "saved",
         gcs_uri: str | None = None,
         summary: str | None = None,
@@ -107,17 +119,15 @@ class ReelRepository:
                   summary,
                   actionable_items,
                   resources,
-                  user_id,
-                  tags
+                  user_id
                 )
-                values (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s, %s)
+                values (%s, %s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (canonical_url, user_id)
                 do update set source_url = excluded.source_url,
                               gcs_uri = excluded.gcs_uri,
                               summary = excluded.summary,
                               actionable_items = excluded.actionable_items,
-                              resources = excluded.resources,
-                              tags = excluded.tags
+                              resources = excluded.resources
                 returning *
                 """,
                 (
@@ -135,7 +145,6 @@ class ReelRepository:
                     actionable_items,
                     resources,
                     user_id,
-                    tags or [],
                 ),
             ).fetchone()
         if not row:
@@ -145,10 +154,95 @@ class ReelRepository:
     def list_reels(self, user_id: str, limit: int = 50) -> list[ReelOut]:
         with self._connect() as conn:
             rows = conn.execute(
-                "select * from reels where (user_id = %s or user_id is null) order by created_at desc limit %s",
+                REEL_SELECT + " where (r.user_id = %s or r.user_id is null) order by r.created_at desc limit %s",
                 (user_id, limit),
             ).fetchall()
         return [_reel_from_row(row) for row in rows]
+
+    def list_collection_source_reels(self, user_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                select id, title, caption, creator, summary, actionable_items, resources, created_at
+                from reels
+                where user_id = %s
+                order by created_at asc
+                """,
+                (user_id,),
+            ).fetchall()
+
+    def replace_collections(self, user_id: str, drafts: list[CollectionDraft]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                delete from reel_collections
+                where user_id = %s
+                """,
+                (user_id,),
+            )
+            for draft in drafts:
+                collection = conn.execute(
+                    """
+                    insert into reel_collections (user_id, name, description, keywords)
+                    values (%s, %s, %s, %s)
+                    returning id
+                    """,
+                    (user_id, draft.name, draft.description, draft.keywords),
+                ).fetchone()
+                if not collection:
+                    continue
+                collection_id = collection["id"]
+                for reel_id in draft.reel_ids:
+                    conn.execute(
+                        """
+                        insert into reel_collection_items (collection_id, reel_id)
+                        values (%s, %s)
+                        on conflict (reel_id) do update set collection_id = excluded.collection_id
+                        """,
+                        (collection_id, reel_id),
+                    )
+            conn.commit()
+
+    def list_collections(self, user_id: str) -> list[CollectionOut]:
+        with self._connect() as conn:
+            collection_rows = conn.execute(
+                """
+                select
+                  c.*,
+                  count(ci.reel_id)::int as reel_count
+                from reel_collections c
+                left join reel_collection_items ci on ci.collection_id = c.id
+                where c.user_id = %s
+                group by c.id
+                order by reel_count desc, c.updated_at desc, c.name asc
+                """,
+                (user_id,),
+            ).fetchall()
+            reel_rows = conn.execute(
+                REEL_SELECT
+                + """
+                where r.user_id = %s and c.id is not null
+                order by c.name asc, r.created_at desc
+                """,
+                (user_id,),
+            ).fetchall()
+
+        reels_by_collection: dict[Any, list[ReelOut]] = {}
+        for row in reel_rows:
+            reels_by_collection.setdefault(row["collection_id"], []).append(_reel_from_row(row))
+
+        return [
+            CollectionOut(
+                id=row["id"],
+                name=row["name"],
+                description=row.get("description"),
+                keywords=row.get("keywords") or [],
+                reel_count=row["reel_count"],
+                updated_at=row["updated_at"],
+                reels=reels_by_collection.get(row["id"], []),
+            )
+            for row in collection_rows
+        ]
 
     def search(self, query_text: str, embedding: Sequence[float], limit: int, user_id: str) -> list[SearchResult]:
         with self._connect() as conn:
