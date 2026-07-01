@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 import json
+from time import time
 from uuid import UUID
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Depends
@@ -8,8 +9,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.schemas import CollectionOut, HealthResponse, SaveResponse, SearchRequest, SearchResult, ReelOut
-from app.services.auth import get_current_user_id
+from app.schemas import CollectionOut, HealthResponse, SaveResponse, SearchRequest, SearchResult, ReelOut, SyncTokenResponse
+from app.services.auth import create_sync_token, get_current_user_id
 from app.services.db import DatabaseError, ReelRepository
 from app.services.embedder import EmbeddingError, VertexEmbeddingProvider
 from app.services.downloader import MediaDownloadError, download_media
@@ -21,7 +22,12 @@ settings = get_settings()
 
 app = FastAPI(title="Reel Search API", version="0.1.0")
 allowed_origins = [origin.strip() for origin in settings.frontend_origin.split(",") if origin.strip()]
-allowed_origins.extend(["capacitor://localhost", "http://localhost"])
+allowed_origins.extend([
+    "capacitor://localhost",
+    "http://localhost",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+])
 allowed_origins = list(set(allowed_origins))
 allow_credentials = "*" not in allowed_origins
 
@@ -31,6 +37,7 @@ app.add_middleware(
     allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_private_network=True,
 )
 
 
@@ -100,6 +107,18 @@ async def recluster_collections(user_id: str = Depends(get_current_user_id)) -> 
         return await run_in_threadpool(repo.list_collections, user_id)
     except DatabaseError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/sync-token", response_model=SyncTokenResponse)
+def issue_sync_token(user_id: str = Depends(get_current_user_id)) -> SyncTokenResponse:
+    if not settings.shortcut_token:
+        raise HTTPException(status_code=503, detail="SHORTCUT_TOKEN is not configured")
+    expires_at = int(time()) + 60 * 60 * 24 * 365
+    return SyncTokenResponse(
+        user_id=UUID(user_id),
+        sync_token=create_sync_token(user_id, expires_at),
+        expires_at=expires_at,
+    )
 
 
 @app.post("/api/reels", response_model=SaveResponse)

@@ -1,7 +1,10 @@
 import pytest
+import asyncio
+from time import time
 from fastapi.testclient import TestClient
 from app.main import app
 from app.config import get_settings
+from app.services.auth import create_sync_token, get_current_user_id
 
 # A test user UUID
 TEST_USER_ID = "c0a63498-a3ff-41dd-a125-e8c3cfbb20cd"
@@ -45,4 +48,41 @@ def test_save_shortcut_missing_token_config():
             assert response.status_code == 401
     finally:
         # Restore the original token configuration
+        settings.shortcut_token = original_token
+
+
+def test_sync_headers_authenticate_shortcut_user():
+    settings = get_settings()
+    original_token = settings.shortcut_token
+    settings.shortcut_token = "test-shortcut-token"
+
+    try:
+        token = create_sync_token(TEST_USER_ID, int(time()) + 3600)
+        user_id = asyncio.run(
+            get_current_user_id(
+                authorization=None,
+                x_reel_user_id=TEST_USER_ID,
+                x_reel_sync_token=token,
+            )
+        )
+        assert user_id == TEST_USER_ID
+    finally:
+        settings.shortcut_token = original_token
+
+
+def test_sync_headers_reject_wrong_token():
+    settings = get_settings()
+    original_token = settings.shortcut_token
+    settings.shortcut_token = "test-shortcut-token"
+
+    try:
+        with pytest.raises(Exception):
+            asyncio.run(
+                get_current_user_id(
+                    authorization=None,
+                    x_reel_user_id=TEST_USER_ID,
+                    x_reel_sync_token="v1.9999999999.wrong-token",
+                )
+            )
+    finally:
         settings.shortcut_token = original_token

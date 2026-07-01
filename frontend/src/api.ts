@@ -40,9 +40,37 @@ export type Health = {
   missing_env: string[];
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+export type SyncToken = {
+  user_id: string;
+  sync_token: string;
+  expires_at: number;
+};
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+export const SYNC_USER_ID_STORAGE_KEY = "reel_search_sync_user_id";
+export const SYNC_TOKEN_STORAGE_KEY = "reel_search_sync_token";
+
+export function getStoredSyncIdentity() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const userId = localStorage.getItem(SYNC_USER_ID_STORAGE_KEY) || urlParams.get("user_id") || import.meta.env.VITE_REEL_SYNC_USER_ID || "";
+  const token = localStorage.getItem(SYNC_TOKEN_STORAGE_KEY) || urlParams.get("sync_token") || import.meta.env.VITE_REEL_SYNC_TOKEN || "";
+  return { userId, token };
+}
+
+export function setStoredSyncIdentity(userId: string, token: string) {
+  localStorage.setItem(SYNC_USER_ID_STORAGE_KEY, userId);
+  localStorage.setItem(SYNC_TOKEN_STORAGE_KEY, token);
+}
 
 async function getAuthHeaders(): Promise<HeadersInit> {
+  const syncIdentity = getStoredSyncIdentity();
+  if (syncIdentity.userId && syncIdentity.token) {
+    return {
+      "X-Reel-User-Id": syncIdentity.userId,
+      "X-Reel-Sync-Token": syncIdentity.token
+    };
+  }
+
   const { data: { session } } = await supabase.auth.getSession();
   const token = session?.access_token;
   return token ? { "Authorization": `Bearer ${token}` } : {};
@@ -74,6 +102,14 @@ export async function fetchReels(): Promise<Reel[]> {
 export async function fetchCollections(): Promise<Collection[]> {
   const headers = await getAuthHeaders();
   return parseResponse<Collection[]>(await fetch(`${API_BASE}/api/collections`, { headers }));
+}
+
+export async function createSyncToken(): Promise<SyncToken> {
+  const headers = await getAuthHeaders();
+  return parseResponse<SyncToken>(await fetch(`${API_BASE}/api/sync-token`, {
+    method: "POST",
+    headers
+  }));
 }
 
 export async function reclusterCollections(): Promise<Collection[]> {

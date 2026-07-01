@@ -54,3 +54,9 @@ class CollectionOut(BaseModel):
     reel_count: int
     updated_at: datetime
     reels: list[ReelOut] = Field(default_factory=list)
+
+
+class SyncTokenResponse(BaseModel):
+    user_id: UUID
+    sync_token: str
+    expires_at: int

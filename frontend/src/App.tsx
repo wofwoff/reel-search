@@ -1,5 +1,20 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Collection, fetchCollections, fetchHealth, fetchReels, Health, Reel, reclusterCollections, saveReel, searchReels, SearchResult, deleteReel } from "./api";
+import {
+  Collection,
+  fetchCollections,
+  fetchHealth,
+  fetchReels,
+  getStoredSyncIdentity,
+  Health,
+  Reel,
+  createSyncToken,
+  reclusterCollections,
+  saveReel,
+  searchReels,
+  SearchResult,
+  deleteReel,
+  setStoredSyncIdentity
+} from "./api";
 import { supabase } from "./supabaseClient";
 
 type SaveState = "idle" | "downloading" | "uploading" | "embedding" | "saved" | "failed";
@@ -347,14 +362,85 @@ export default function App() {
 
   async function refreshLibrary() {
     try {
-      const [reels, groupedCollections] = await Promise.all([fetchReels(), fetchCollections()]);
+      const reels = await fetchReels();
       setLibrary(reels);
-      setCollections(groupedCollections);
+      try {
+        const groupedCollections = await fetchCollections();
+        setCollections(groupedCollections);
+      } catch (collectionsErr) {
+        console.error("Failed to fetch collections:", collectionsErr);
+        setCollections([]);
+      }
     } catch (err) {
-      console.error("Failed to fetch library:", err);
+      console.error("Failed to fetch reels:", err);
       setLibrary([]);
       setCollections([]);
     }
+  }
+
+  function importSyncIdentity(userIdParam: string | null, syncTokenParam: string | null) {
+    if (!userIdParam || !syncTokenParam) return false;
+    setStoredSyncIdentity(userIdParam, syncTokenParam);
+    setUserId(userIdParam);
+    return true;
+  }
+
+  async function importSupabaseSync(accessToken: string | null, refreshToken: string | null) {
+    if (!refreshToken) return null;
+    if (accessToken) {
+      const res = await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken
+      });
+      if (!res.error) return null;
+      const refreshRes = await supabase.auth.refreshSession({
+        refresh_token: refreshToken
+      });
+      return refreshRes.error;
+    }
+
+    const res = await supabase.auth.refreshSession({
+      refresh_token: refreshToken
+    });
+    return res.error;
+  }
+
+  function buildSyncLink() {
+    const syncIdentity = getStoredSyncIdentity();
+    if (syncIdentity.userId && syncIdentity.token) {
+      return `${window.location.origin}${window.location.pathname}?user_id=${encodeURIComponent(syncIdentity.userId)}&sync_token=${encodeURIComponent(syncIdentity.token)}`;
+    }
+    if (syncAccessToken && syncRefreshToken) {
+      return `${window.location.origin}${window.location.pathname}?access_token=${encodeURIComponent(syncAccessToken)}&refresh_token=${encodeURIComponent(syncRefreshToken)}`;
+    }
+    return "";
+  }
+
+  async function importSyncInput(value: string) {
+    let token = value.trim();
+    let accessToken = "";
+    let importUserId = "";
+    let importSyncToken = "";
+
+    try {
+      if (token.includes("?")) {
+        const urlObj = new URL(token);
+        token = urlObj.searchParams.get("refresh_token") || urlObj.searchParams.get("sync") || token;
+        accessToken = urlObj.searchParams.get("access_token") || "";
+        importUserId = urlObj.searchParams.get("user_id") || "";
+        importSyncToken = urlObj.searchParams.get("sync_token") || "";
+      }
+    } catch {
+      // Treat raw input as a legacy refresh token.
+    }
+
+    if (importSyncIdentity(importUserId, importSyncToken)) {
+      await refreshLibrary();
+      return;
+    }
+
+    const error = await importSupabaseSync(accessToken, token);
+    if (error) throw error;
   }
 
   async function handleRecluster() {
@@ -380,6 +466,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const userIdParam = urlParams.get("user_id");
+    const syncTokenParam = urlParams.get("sync_token");
+
+    if (importSyncIdentity(userIdParam, syncTokenParam)) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    const syncIdentity = getStoredSyncIdentity();
+    if (syncIdentity.userId && syncIdentity.token) {
+      setUserId(syncIdentity.userId);
+      setIsAuthLoading(false);
+      refreshLibrary();
+    }
+  }, []);
+
+  useEffect(() => {
     let active = true;
 
     const initAuth = async () => {
@@ -387,33 +490,25 @@ export default function App() {
         const urlParams = new URLSearchParams(window.location.search);
         const accessTokenParam = urlParams.get("access_token");
         const refreshTokenParam = urlParams.get("refresh_token") || urlParams.get("sync");
+        const userIdParam = urlParams.get("user_id");
+        const syncTokenParam = urlParams.get("sync_token");
         
-        if (refreshTokenParam) {
+        if (importSyncIdentity(userIdParam, syncTokenParam)) {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        } else if (refreshTokenParam) {
           setIsAuthLoading(true);
-          let error = null;
-          if (accessTokenParam) {
-            const res = await supabase.auth.setSession({
-              access_token: accessTokenParam,
-              refresh_token: refreshTokenParam
-            });
-            error = res.error;
-            if (error) {
-              const refreshRes = await supabase.auth.refreshSession({
-                refresh_token: refreshTokenParam
-              });
-              error = refreshRes.error;
-            }
-          } else {
-            const res = await supabase.auth.refreshSession({
-              refresh_token: refreshTokenParam
-            });
-            error = res.error;
-          }
+          const error = await importSupabaseSync(accessTokenParam, refreshTokenParam);
           if (error) {
             console.error("Failed to import sync session:", error);
           }
-          // Clean the URL by removing the query params
           window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
+        const syncIdentity = getStoredSyncIdentity();
+        if (active && syncIdentity.userId && syncIdentity.token) {
+          setUserId(syncIdentity.userId);
+          refreshLibrary();
+          return;
         }
 
         const { data: { session } } = await supabase.auth.getSession();
@@ -440,7 +535,12 @@ export default function App() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (active) {
-        if (!session) {
+        const syncIdentity = getStoredSyncIdentity();
+        if (syncIdentity.userId && syncIdentity.token) {
+          setUserId(syncIdentity.userId);
+          setIsAuthLoading(false);
+          refreshLibrary();
+        } else if (!session) {
           setIsAuthLoading(true);
           setUserId("");
           await supabase.auth.signInAnonymously();
@@ -834,16 +934,14 @@ export default function App() {
                   setSyncError("");
                   setSyncSuccess(false);
                   try {
-                    const { data: { session } } = await supabase.auth.getSession();
-                    if (session) {
-                      setSyncAccessToken(session.access_token);
-                      setSyncRefreshToken(session.refresh_token);
-                    } else {
-                      setSyncAccessToken("");
-                      setSyncRefreshToken("");
-                    }
+                    const issued = await createSyncToken();
+                    setStoredSyncIdentity(issued.user_id, issued.sync_token);
+                    setUserId(issued.user_id);
+                    setSyncAccessToken("");
+                    setSyncRefreshToken("");
                   } catch (e) {
-                    console.error("Failed to load sync session", e);
+                    console.error("Failed to create sync link", e);
+                    setSyncError(e instanceof Error ? e.message : "Failed to create sync link");
                   }
                 }}
                 className="flex items-center justify-between w-full font-label-md text-label-md text-primary uppercase tracking-widest text-left"
@@ -1001,11 +1099,11 @@ export default function App() {
                   Scan this QR code with your iPhone camera to instantly open and sync this exact library in Safari.
                 </p>
                 
-                {syncRefreshToken ? (
+                {buildSyncLink() ? (
                   <div className="flex justify-center p-4 bg-white rounded-lg border border-outline-variant/30 w-fit mx-auto shadow-sm">
                     <img 
                       src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
-                        `${window.location.origin}${window.location.pathname}?access_token=${syncAccessToken}&refresh_token=${syncRefreshToken}`
+                        buildSyncLink()
                       )}`} 
                       alt="Sync QR Code"
                       className="w-[180px] h-[180px]"
@@ -1026,13 +1124,12 @@ export default function App() {
                 
                 <div className="flex items-center gap-2 bg-surface-container-high rounded px-3 py-2 font-mono text-xs">
                   <span className="truncate flex-grow">
-                    {syncRefreshToken ? `${window.location.origin}${window.location.pathname}?access_token=${syncAccessToken}&refresh_token=${syncRefreshToken}` : "Loading..."}
+                    {buildSyncLink() || "Loading..."}
                   </span>
-                  {syncRefreshToken && (
+                  {buildSyncLink() && (
                     <button 
                       onClick={() => {
-                        const link = `${window.location.origin}${window.location.pathname}?access_token=${syncAccessToken}&refresh_token=${syncRefreshToken}`;
-                        copyToClipboard(link, setCopiedSyncLink);
+                        copyToClipboard(buildSyncLink(), setCopiedSyncLink);
                       }}
                       className="text-primary hover:text-primary/80 shrink-0"
                       type="button"
@@ -1059,34 +1156,8 @@ export default function App() {
                     setSyncError("");
                     setSyncSuccess(false);
 
-                    // Parse tokens if full URL was pasted
-                    let token = pastedSyncCode.trim();
-                    let accessToken = "";
                     try {
-                      if (token.includes("?")) {
-                        const urlObj = new URL(token);
-                        token = urlObj.searchParams.get("refresh_token") || urlObj.searchParams.get("sync") || token;
-                        accessToken = urlObj.searchParams.get("access_token") || "";
-                      }
-                    } catch (e) {
-                      // Ignore parsing error, fallback to using raw pasted text
-                    }
-
-                    try {
-                      let error = null;
-                      if (accessToken) {
-                        const res = await supabase.auth.setSession({
-                          access_token: accessToken,
-                          refresh_token: token
-                        });
-                        error = res.error;
-                      } else {
-                        const res = await supabase.auth.refreshSession({
-                          refresh_token: token
-                        });
-                        error = res.error;
-                      }
-                      if (error) throw error;
+                      await importSyncInput(pastedSyncCode);
                       setSyncSuccess(true);
                       setPastedSyncCode("");
                       setTimeout(() => {
