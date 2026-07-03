@@ -17,6 +17,8 @@ import {
 } from "./api";
 import { supabase } from "./supabaseClient";
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
 type SaveState = "idle" | "downloading" | "uploading" | "embedding" | "saved" | "failed";
 
 function formatDate(value: string) {
@@ -407,11 +409,17 @@ export default function App() {
 
   function buildSyncLink() {
     const syncIdentity = getStoredSyncIdentity();
+    let base = window.location.origin;
+    if (base.startsWith("capacitor://") || base.includes("localhost")) {
+      base = "https://reel-search-frontend-771696730702.us-central1.run.app";
+    }
+    const path = base === "https://reel-search-frontend-771696730702.us-central1.run.app" ? "/" : window.location.pathname;
+
     if (syncIdentity.userId && syncIdentity.token) {
-      return `${window.location.origin}${window.location.pathname}?user_id=${encodeURIComponent(syncIdentity.userId)}&sync_token=${encodeURIComponent(syncIdentity.token)}`;
+      return `${base}${path}?user_id=${encodeURIComponent(syncIdentity.userId)}&sync_token=${encodeURIComponent(syncIdentity.token)}`;
     }
     if (syncAccessToken && syncRefreshToken) {
-      return `${window.location.origin}${window.location.pathname}?access_token=${encodeURIComponent(syncAccessToken)}&refresh_token=${encodeURIComponent(syncRefreshToken)}`;
+      return `${base}${path}?access_token=${encodeURIComponent(syncAccessToken)}&refresh_token=${encodeURIComponent(syncRefreshToken)}`;
     }
     return "";
   }
@@ -422,7 +430,17 @@ export default function App() {
     let importUserId = "";
     let importSyncToken = "";
 
+    // 1. Check if the token is a raw sync token (starts with "v1.") but doesn't have query params
+    if (token.startsWith("v1.") && !token.includes("?")) {
+      throw new Error("Sync token requires a User ID. Please paste the full Sync Link instead.");
+    }
+
     try {
+      // 2. Prepend protocol if it looks like a URL but is missing scheme
+      if (!/^https?:\/\//i.test(token) && (token.includes("user_id=") || token.includes("sync_token="))) {
+        token = "https://" + token;
+      }
+
       if (token.includes("?")) {
         const urlObj = new URL(token);
         token = urlObj.searchParams.get("refresh_token") || urlObj.searchParams.get("sync") || token;
@@ -434,9 +452,29 @@ export default function App() {
       // Treat raw input as a legacy refresh token.
     }
 
-    if (importSyncIdentity(importUserId, importSyncToken)) {
-      await refreshLibrary();
-      return;
+    if (importUserId && importSyncToken) {
+      // 3. Validate the credentials with the backend before saving them to localStorage
+      try {
+        const validateRes = await fetch(`${API_BASE}/api/reels`, {
+          headers: {
+            "X-Reel-User-Id": importUserId,
+            "X-Reel-Sync-Token": importSyncToken,
+          },
+        });
+        if (validateRes.status === 401) {
+          throw new Error("Invalid sync token");
+        }
+        if (!validateRes.ok) {
+          throw new Error(`Sync validation failed: Server returned ${validateRes.status}`);
+        }
+      } catch (err) {
+        throw err instanceof Error ? err : new Error("Invalid sync token");
+      }
+
+      if (importSyncIdentity(importUserId, importSyncToken)) {
+        await refreshLibrary();
+        return;
+      }
     }
 
     const error = await importSupabaseSync(accessToken, token);

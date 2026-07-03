@@ -19,7 +19,7 @@ def create_sync_token(user_id: str, expires_at: int) -> str:
     return f"{SYNC_TOKEN_VERSION}.{expires_at}.{encoded_signature}"
 
 
-def _is_valid_sync_token(user_id: str, token: str) -> bool:
+def is_valid_sync_token(user_id: str, token: str) -> bool:
     if not settings.shortcut_token:
         return False
 
@@ -49,7 +49,7 @@ def _shortcut_user_id(
         user_id = str(UUID(x_reel_user_id))
     except ValueError:
         return None
-    if not _is_valid_sync_token(user_id, x_reel_sync_token):
+    if not is_valid_sync_token(user_id, x_reel_sync_token):
         return None
     return user_id
 

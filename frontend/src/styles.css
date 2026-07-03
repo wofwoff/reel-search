@@ -6,3 +6,24 @@
 .animate-fade-in {
   animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* iOS Safe Area adjustments */
+header.fixed {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+main {
+  padding-top: calc(6rem + env(safe-area-inset-top, 0px)) !important;
+}
+
+/* Force standard inputs and textareas to 16px on mobile to prevent iOS auto-zooming */
+@media screen and (max-width: 768px) {
+  input[type="text"],
+  input[type="number"],
+  input[type="email"],
+  input[type="search"],
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}

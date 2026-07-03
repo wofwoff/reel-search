@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.schemas import CollectionOut, HealthResponse, SaveResponse, SearchRequest, SearchResult, ReelOut, SyncTokenResponse
-from app.services.auth import create_sync_token, get_current_user_id
+from app.services.auth import create_sync_token, get_current_user_id, is_valid_sync_token
 from app.services.db import DatabaseError, ReelRepository
 from app.services.embedder import EmbeddingError, VertexEmbeddingProvider
 from app.services.downloader import MediaDownloadError, download_media
@@ -258,7 +258,11 @@ async def save_reel_shortcut(
     token: str = Form(...),
     user_id: str = Form(...),
 ) -> SaveResponse:
-    if not settings.shortcut_token or token != settings.shortcut_token:
+    # Accept either the global shortcut_token OR a valid user-specific sync_token
+    is_global_valid = settings.shortcut_token and token == settings.shortcut_token
+    is_sync_valid = is_valid_sync_token(user_id, token)
+    
+    if not (is_global_valid or is_sync_valid):
         raise HTTPException(status_code=401, detail="Invalid shortcut token")
     return await save_reel(url=url, files=[], user_id=user_id)
 
