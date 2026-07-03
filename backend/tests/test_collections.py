@@ -63,3 +63,27 @@ def test_build_collections_uses_one_collection_for_tiny_libraries():
 
     assert len(collections) == 1
     assert len(collections[0].reel_ids) == 2
+
+
+def test_build_collections_excludes_common_stopwords():
+    reels = [
+        {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "title": "How to make a website",
+            "summary": "This is a simple guide on how to build a website and use CSS grid.",
+        },
+        {
+            "id": "00000000-0000-0000-0000-000000000002",
+            "title": "A tutorial for CSS grid layout",
+            "summary": "Explains how the layout works with CSS grid and flexbox for styling.",
+        },
+    ]
+
+    collections = build_collections(reels)
+    assert len(collections) == 1
+    collection = collections[0]
+
+    forbidden = {"how", "to", "a", "the", "for", "and", "this", "is", "on", "with"}
+    for word in forbidden:
+        assert word.capitalize() not in collection.keywords
+        assert word.lower() not in collection.name.lower()
