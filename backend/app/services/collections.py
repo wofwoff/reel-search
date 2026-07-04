@@ -120,6 +120,31 @@ STOP_WORDS = {
     "work",
     "would",
     "your",
+    # Additional generic and metadata terms
+    "github",
+    "repository",
+    "repositories",
+    "repo",
+    "repos",
+    "git",
+    "title",
+    "videos",
+    "creator",
+    "creators",
+    "speaker",
+    "web",
+    "page",
+    "link",
+    "website",
+    "websites",
+    "com",
+    "www",
+    "free",
+    "tool",
+    "tools",
+    "use",
+    "ideas",
+    "idea",
 }
 
 GENERIC_LABEL_WORDS = STOP_WORDS | {
@@ -233,7 +258,7 @@ def _cluster_indices(vectors: list[dict[str, float]]) -> list[list[int]]:
 
     clusters = [[idx] for idx in range(reel_count)]
     target = _target_cluster_count(reel_count)
-    minimum_merge_score = 0.055
+    minimum_merge_score = 0.02
 
     while len(clusters) > target:
         best_pair: tuple[int, int] | None = None
@@ -253,7 +278,9 @@ def _cluster_indices(vectors: list[dict[str, float]]) -> list[list[int]]:
     mixed: list[int] = []
     stable: list[list[int]] = []
     for cluster in clusters:
-        if len(cluster) == 1 and reel_count > 5:
+        # If we have a relatively small number of clusters, avoid grouping 1-item clusters into mixed.
+        # This keeps single-item topics separate and clean rather than merging them into a giant mixed pool.
+        if len(cluster) == 1 and len(clusters) > 8:
             mixed.extend(cluster)
         else:
             stable.append(cluster)
