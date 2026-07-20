@@ -37,31 +37,35 @@ function CollectionCard({ collection, onSelect }: { collection: Collection; onSe
       className="collection-card group flex min-h-full flex-col overflow-hidden rounded-[16px] border border-outline-variant/55 bg-surface-container-lowest text-left transition-[border-color,transform,background-color] duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface"
     >
       <div
-        className="grid h-44 w-full gap-1.5 bg-surface-container p-3 sm:h-48"
+        className="collection-card__preview grid w-full gap-1.5 bg-surface-container p-3"
         style={{ gridTemplateColumns: `repeat(${visiblePreviews.length}, minmax(0, 1fr))` }}
       >
         {visiblePreviews.map((reel, index) => (
           <img
             key={reel?.id ?? `fallback-${index}`}
             src={reel?.thumbnail_url || "/logo.png"}
-            alt={reel?.title ? `${reel.title} preview` : ""}
+            alt=""
             loading="lazy"
             decoding="async"
+            onError={(event) => {
+              event.currentTarget.onerror = null;
+              event.currentTarget.src = "/logo.png";
+            }}
             className="h-full min-w-0 w-full rounded-[10px] object-cover"
           />
         ))}
       </div>
 
-      <div className="flex flex-1 flex-col px-5 pb-5 pt-4">
+      <div className="collection-card__content flex flex-1 flex-col px-4 pb-4 pt-4 sm:px-5 sm:pb-5">
         <div className="mb-3 flex items-start gap-3">
-          <span className={`material-symbols-outlined flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[20px] ${presentation.badge}`} aria-hidden="true">
+          <span className={`material-symbols-outlined flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[18px] ${presentation.badge}`} aria-hidden="true">
             {presentation.icon}
           </span>
           <div className="min-w-0">
-            <h3 className="text-balance font-headline-sm text-[22px] font-bold leading-tight text-on-surface">
+            <h3 className="text-balance font-headline-sm text-[19px] font-bold leading-[1.2] text-on-surface sm:text-[20px]">
               {collection.name}
             </h3>
-            <p className="mt-1 text-sm font-semibold text-primary">{domain}</p>
+            <p className="mt-1 text-xs font-semibold text-primary sm:text-sm">{domain}</p>
           </div>
         </div>
 

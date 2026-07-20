@@ -21,4 +21,12 @@ describe("responsive layout contracts", () => {
     expect(css).toContain("@media (hover: hover) and (pointer: fine)");
     expect(css).toContain("@media (pointer: coarse)");
   });
+
+  it("isolates collection headings from previews and uses a compact reel grid", () => {
+    expect(css).toMatch(/\.collection-card__preview\s*\{[^}]*overflow:\s*hidden/s);
+    expect(css).toMatch(/\.collection-card__content\s*\{[^}]*isolation:\s*isolate/s);
+    expect(css).toMatch(/\.reel-card__media\s*\{[^}]*aspect-ratio:\s*4\s*\/\s*5/s);
+    expect(css).toMatch(/\.reel-grid\s*\{[^}]*repeat\(2, minmax\(0, 1fr\)\)/);
+    expect(css).toMatch(/@media \(min-width: 80rem\)[\s\S]*?\.reel-grid\s*\{[^}]*repeat\(8, minmax\(0, 1fr\)\)/);
+  });
 });

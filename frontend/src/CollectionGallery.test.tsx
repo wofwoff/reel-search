@@ -43,6 +43,25 @@ describe("CollectionGallery", () => {
     expect((html.match(/loading="lazy"/g) ?? []).length).toBe(3);
   });
 
+  it("keeps collection titles in a separate content region below the previews", () => {
+    const html = renderToStaticMarkup(
+      <CollectionGallery
+        collections={[collection]}
+        refreshing={false}
+        onRefresh={() => undefined}
+        onSelect={() => undefined}
+      />
+    );
+
+    const previewStart = html.indexOf("collection-card__preview");
+    const contentStart = html.indexOf("collection-card__content");
+    const titleStart = html.indexOf(">Motion Design</h3>", contentStart);
+
+    expect(previewStart).toBeGreaterThan(-1);
+    expect(contentStart).toBeGreaterThan(previewStart);
+    expect(titleStart).toBeGreaterThan(contentStart);
+  });
+
   it("renders a useful empty state", () => {
     const html = renderToStaticMarkup(
       <CollectionGallery

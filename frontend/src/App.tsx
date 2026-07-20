@@ -42,63 +42,65 @@ function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClic
   const title = reel.title || reel.caption || "Saved reel";
 
   return (
-    <div 
+    <button
+      type="button"
+      aria-label={`Open ${title}`}
       onClick={onClick}
-      className="group bg-surface-container-lowest rounded-lg p-4 border border-outline-variant shadow-sm hover:shadow-lg transition-all duration-300 flex flex-col h-full cursor-pointer"
+      className="reel-card group flex h-full w-full min-w-0 cursor-pointer flex-col rounded-[16px] border border-outline-variant/70 bg-surface-container-lowest p-2.5 text-left shadow-sm transition-[border-color,box-shadow,transform] duration-200 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface sm:p-3"
     >
-      <div className="relative aspect-[9/16] rounded-lg overflow-hidden mb-6 bg-surface-variant flex items-center justify-center">
+      <div className="reel-card__media relative mb-3 flex w-full items-center justify-center overflow-hidden rounded-[12px] bg-surface-variant">
         {reel.thumbnail_url ? (
           <img 
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" 
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
             src={reel.thumbnail_url} 
-            alt={title} 
+            alt=""
+            loading="lazy"
+            decoding="async"
           />
         ) : (
-          <span className="material-symbols-outlined text-[48px] text-outline">video_library</span>
+          <span className="material-symbols-outlined text-[36px] text-outline">video_library</span>
         )}
         
         <div className="absolute inset-0 bg-black/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-          <div className="w-12 h-12 rounded-full bg-surface/90 flex items-center justify-center shadow-lg">
-            <span className="material-symbols-outlined text-primary text-[28px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface/90 shadow-md">
+            <span className="material-symbols-outlined text-[24px] text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>
               play_arrow
             </span>
           </div>
         </div>
 
         {score !== undefined && (
-          <div className="absolute top-4 right-4">
-            <span className="bg-primary/95 backdrop-blur-sm text-on-primary px-3 py-1 rounded-full font-label-sm text-label-sm font-bold">
+          <div className="absolute right-2 top-2">
+            <span className="rounded-full bg-primary/95 px-2 py-1 text-[10px] font-bold text-on-primary backdrop-blur-sm">
               {Math.round(score * 100)}% match
             </span>
           </div>
         )}
       </div>
 
-      <div className="px-2 pb-2 space-y-3 flex-grow flex flex-col">
-        <span className="font-label-sm text-label-sm text-primary">{reel.creator || getPlatformName(reel.source_url)}</span>
-        <h3 className="font-headline-sm text-[20px] text-on-surface group-hover:text-primary transition-colors line-clamp-1">
+      <div className="reel-card__content flex flex-grow flex-col gap-2 px-1 pb-1">
+        <span className="line-clamp-1 text-[11px] font-semibold text-primary">{reel.creator || getPlatformName(reel.source_url)}</span>
+        <h3 className="line-clamp-2 font-headline-sm text-[16px] font-semibold leading-[1.25] text-on-surface transition-colors group-hover:text-primary">
           {title}
         </h3>
         {reel.caption && reel.caption !== title && (
-          <p className="font-body-md text-body-md text-on-surface-variant line-clamp-3">
+          <p className="line-clamp-2 text-[13px] leading-[1.45] text-on-surface-variant">
             {reel.caption}
           </p>
         )}
         {reel.collection_name && (
-          <div className="flex flex-wrap gap-1 pt-2">
-            <span className="bg-primary/5 text-primary border border-primary/10 px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase">
+          <div className="flex flex-wrap gap-1 pt-1">
+            <span className="rounded-full border border-primary/10 bg-primary/5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-primary">
               {reel.collection_name}
             </span>
           </div>
         )}
-        <div className="pt-4 mt-auto flex items-center justify-between border-t border-outline-variant/30">
-          <span className="font-label-sm text-label-sm text-outline">Saved {formatDate(reel.created_at)}</span>
-          <button className="text-primary hover:bg-primary/5 p-2 rounded-full transition-all">
-            <span className="material-symbols-outlined">open_in_new</span>
-          </button>
+        <div className="mt-auto flex items-center justify-between gap-2 border-t border-outline-variant/30 pt-2.5">
+          <span className="line-clamp-1 text-[10px] font-medium text-outline">Saved {formatDate(reel.created_at)}</span>
+          <span className="material-symbols-outlined shrink-0 text-[18px] text-primary" aria-hidden="true">open_in_new</span>
         </div>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -1075,7 +1077,7 @@ export default function App() {
                 {collectionLoading ? (
                   <div className="reel-grid" aria-label="Loading collection reels">
                     {[0, 1, 2].map((index) => (
-                      <div key={index} className="h-[480px] animate-pulse rounded-[16px] bg-surface-container-low" />
+                      <div key={index} className="h-[320px] animate-pulse rounded-[16px] bg-surface-container-low" />
                     ))}
                   </div>
                 ) : library.length > 0 ? (
