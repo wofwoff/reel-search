@@ -3,8 +3,134 @@
   to { opacity: 1; transform: scale(1); }
 }
 
+:root {
+  --page-gutter: clamp(1rem, 3vw, 3rem);
+}
+
+.app-shell {
+  width: min(calc(100% - (2 * var(--page-gutter))), 105rem);
+  margin-inline: auto;
+}
+
+.collection-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: clamp(1rem, 1.8vw, 1.5rem);
+}
+
+.reel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: clamp(1rem, 2vw, 2rem);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.stat-item {
+  min-width: 0;
+  padding: 1rem;
+}
+
+.utility-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.save-form-width {
+  width: min(100%, 56rem);
+  margin-inline: auto;
+}
+
+.save-control-shell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.save-input-cluster {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+}
+
+.save-url-input {
+  min-width: 0;
+  width: 100%;
+}
+
+.save-analyze-button {
+  min-height: 44px;
+}
+
 .animate-fade-in {
   animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.collection-card {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 390px;
+}
+
+@media (min-width: 48rem) {
+  .utility-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 64rem) {
+  .stats-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .stat-item + .stat-item {
+    border-left: 1px solid rgb(218 193 186 / 0.65);
+  }
+}
+
+@media (min-width: 80rem) {
+  .collection-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .collection-card:hover {
+    transform: translateY(-2px);
+    border-color: rgb(148 73 46 / 0.45);
+  }
+}
+
+@media (pointer: coarse) {
+  button,
+  a {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+
+  .collection-card:active {
+    transform: scale(0.995);
+  }
+}
+
+@media (max-width: 479px) {
+  .save-control-shell {
+    flex-direction: column;
+    align-items: stretch;
+    border-radius: 16px;
+  }
+
+  .save-input-cluster {
+    min-height: 44px;
+  }
+
+  .save-analyze-button {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 /* iOS Safe Area adjustments */
@@ -25,5 +151,16 @@ main {
   textarea,
   select {
     font-size: 16px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

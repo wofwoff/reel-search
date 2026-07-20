@@ -1,3 +1,5 @@
+import json
+
 from app.config import Settings
 
 
@@ -174,3 +176,68 @@ class VertexEmbeddingProvider:
             return json.loads(response.text)
         except Exception:
             return {"title": "Reel Summary", "summary": response.text, "actionable_items": [], "resources": []}
+
+    def classify_collections(self, reels: list[dict]) -> list[dict]:
+        from typing import Literal
+
+        from google.genai import types
+        from pydantic import BaseModel, Field
+
+        Domain = Literal[
+            "Arts & Creativity",
+            "Food & Cooking",
+            "Technology",
+            "Career & Education",
+            "Health & Fitness",
+            "Entertainment",
+            "Travel & Places",
+            "Business & Finance",
+            "Lifestyle",
+            "Other",
+        ]
+
+        class ClassifiedCollection(BaseModel):
+            domain: Domain
+            name: str = Field(description="Specific subject or craft, usually 1-3 words")
+            description: str
+            keywords: list[str]
+            reel_ids: list[str]
+
+        class CollectionPlan(BaseModel):
+            collections: list[ClassifiedCollection]
+
+        reel_context = [
+            {
+                "id": str(reel["id"]),
+                "title": reel.get("title"),
+                "summary": reel.get("summary"),
+                "caption": reel.get("caption"),
+                "actionable_items": reel.get("actionable_items"),
+                "resources": reel.get("resources"),
+            }
+            for reel in reels
+        ]
+        prompt = (
+            "Organize this saved-reel library by what each reel is actually about. "
+            "Use a broad human-interest domain and a specific topic or craft name. "
+            "Group semantically similar reels together and assign every supplied reel ID exactly once.\n\n"
+            "Choose domain from the schema. Topic names should look like Motion Design, Video Editing, "
+            "Singing, Cooking, Developer Tools, or Job Search. Prioritize the skill, art form, subject, "
+            "or outcome discussed. Do not name a collection GitHub, Repositories, Instagram, YouTube, "
+            "Claude Code, or another source/enabling tool unless that tool itself is genuinely the lesson. "
+            "For example, a Claude Code workflow that edits videos belongs under Video Editing; a GitHub "
+            "repository for animations belongs under Motion Design. Keep descriptions concise and useful.\n\n"
+            f"Reels:\n{json.dumps(reel_context, ensure_ascii=False)}"
+        )
+
+        response = self.client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=CollectionPlan,
+            ),
+        )
+        parsed = json.loads(response.text)
+        collections = parsed.get("collections")
+        return collections if isinstance(collections, list) else []

@@ -4,12 +4,12 @@ import json
 from time import time
 from uuid import UUID
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Depends
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Depends
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.schemas import CollectionOut, HealthResponse, SaveResponse, SearchRequest, SearchResult, ReelOut, SyncTokenResponse
+from app.schemas import CollectionOut, HealthResponse, LibraryCountOut, SaveResponse, SearchRequest, SearchResult, ReelOut, SyncTokenResponse
 from app.services.auth import create_sync_token, get_current_user_id, is_valid_sync_token
 from app.services.db import DatabaseError, ReelRepository
 from app.services.embedder import EmbeddingError, VertexEmbeddingProvider
@@ -53,9 +53,19 @@ def get_storage() -> GcsStorage:
     return GcsStorage(settings)
 
 
-def recluster_user_collections(repo: ReelRepository, user_id: str) -> None:
+def recluster_user_collections(
+    repo: ReelRepository,
+    user_id: str,
+    classifier: VertexEmbeddingProvider | None = None,
+) -> None:
     reels = repo.list_collection_source_reels(user_id)
-    repo.replace_collections(user_id, build_collections(reels))
+    semantic_groups = None
+    try:
+        semantic_groups = (classifier or get_embedder()).classify_collections(reels)
+    except Exception:
+        # Collection refresh is best effort and must never make saving fail.
+        pass
+    repo.replace_collections(user_id, build_collections(reels, semantic_groups=semantic_groups))
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -86,15 +96,35 @@ def list_reels(user_id: str = Depends(get_current_user_id)) -> list[ReelOut]:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.get("/api/reels/count", response_model=LibraryCountOut)
+def count_reels(user_id: str = Depends(get_current_user_id)) -> LibraryCountOut:
+    try:
+        return LibraryCountOut(count=get_repository().count_reels(user_id=user_id))
+    except DatabaseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/collections", response_model=list[CollectionOut])
 def list_collections(user_id: str = Depends(get_current_user_id)) -> list[CollectionOut]:
     repo = get_repository()
     try:
         collections = repo.list_collections(user_id=user_id)
-        if not collections:
+        if not collections or any(collection.domain is None for collection in collections):
             recluster_user_collections(repo, user_id)
             collections = repo.list_collections(user_id=user_id)
         return collections
+    except DatabaseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/collections/{collection_id}/reels", response_model=list[ReelOut])
+def list_collection_reels(
+    collection_id: UUID,
+    limit: int = Query(default=8, ge=1, le=50),
+    user_id: str = Depends(get_current_user_id),
+) -> list[ReelOut]:
+    try:
+        return get_repository().list_collection_reels(collection_id, user_id, limit)
     except DatabaseError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

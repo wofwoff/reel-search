@@ -159,6 +159,14 @@ class ReelRepository:
             ).fetchall()
         return [_reel_from_row(row) for row in rows]
 
+    def count_reels(self, user_id: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "select count(*)::int as count from reels where (user_id = %s or user_id is null)",
+                (user_id,),
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
     def list_collection_source_reels(self, user_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             return conn.execute(
@@ -183,11 +191,11 @@ class ReelRepository:
             for draft in drafts:
                 collection = conn.execute(
                     """
-                    insert into reel_collections (user_id, name, description, keywords)
-                    values (%s, %s, %s, %s)
+                    insert into reel_collections (user_id, domain, name, description, keywords)
+                    values (%s, %s, %s, %s, %s)
                     returning id
                     """,
-                    (user_id, draft.name, draft.description, draft.keywords),
+                    (user_id, draft.domain, draft.name, draft.description, draft.keywords),
                 ).fetchone()
                 if not collection:
                     continue
@@ -219,12 +227,26 @@ class ReelRepository:
                 (user_id,),
             ).fetchall()
             reel_rows = conn.execute(
-                REEL_SELECT
-                + """
-                where r.user_id = %s and c.id is not null
-                order by c.name asc, r.created_at desc
+                """
+                select *
+                from (
+                  select
+                    r.*,
+                    c.id as collection_id,
+                    c.name as collection_name,
+                    row_number() over (
+                      partition by c.id
+                      order by r.created_at desc
+                    ) as preview_rank
+                  from reels r
+                  join reel_collection_items ci on ci.reel_id = r.id
+                  join reel_collections c on c.id = ci.collection_id
+                  where r.user_id = %s and c.user_id = %s
+                ) ranked_reels
+                where preview_rank <= %s
+                order by collection_name asc, created_at desc
                 """,
-                (user_id,),
+                (user_id, user_id, 3),
             ).fetchall()
 
         reels_by_collection: dict[Any, list[ReelOut]] = {}
@@ -234,15 +256,29 @@ class ReelRepository:
         return [
             CollectionOut(
                 id=row["id"],
+                domain=row.get("domain"),
                 name=row["name"],
                 description=row.get("description"),
                 keywords=row.get("keywords") or [],
                 reel_count=row["reel_count"],
                 updated_at=row["updated_at"],
-                reels=reels_by_collection.get(row["id"], []),
+                reels=reels_by_collection.get(row["id"], [])[:3],
             )
             for row in collection_rows
         ]
+
+    def list_collection_reels(self, collection_id: UUID, user_id: str, limit: int = 8) -> list[ReelOut]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                REEL_SELECT
+                + """
+                where c.id = %s and c.user_id = %s
+                order by r.created_at desc
+                limit %s
+                """,
+                (collection_id, user_id, limit),
+            ).fetchall()
+        return [_reel_from_row(row) for row in rows]
 
     def search(self, query_text: str, embedding: Sequence[float], limit: int, user_id: str) -> list[SearchResult]:
         with self._connect() as conn:

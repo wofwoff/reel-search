@@ -24,12 +24,17 @@ export type SearchResult = Reel & {
 
 export type Collection = {
   id: string;
+  domain?: string | null;
   name: string;
   description?: string | null;
   keywords: string[];
   reel_count: number;
   updated_at: string;
   reels: Reel[];
+};
+
+export type LibraryCount = {
+  count: number;
 };
 
 export type Health = {
@@ -99,9 +104,22 @@ export async function fetchReels(): Promise<Reel[]> {
   return parseResponse<Reel[]>(await fetch(`${API_BASE}/api/reels`, { headers }));
 }
 
+export async function fetchLibraryCount(): Promise<LibraryCount> {
+  const headers = await getAuthHeaders();
+  return parseResponse<LibraryCount>(await fetch(`${API_BASE}/api/reels/count`, { headers }));
+}
+
 export async function fetchCollections(): Promise<Collection[]> {
   const headers = await getAuthHeaders();
   return parseResponse<Collection[]>(await fetch(`${API_BASE}/api/collections`, { headers }));
+}
+
+export async function fetchCollectionReels(collectionId: string): Promise<Reel[]> {
+  const headers = await getAuthHeaders();
+  return parseResponse<Reel[]>(await fetch(
+    `${API_BASE}/api/collections/${encodeURIComponent(collectionId)}/reels`,
+    { headers }
+  ));
 }
 
 export async function createSyncToken(): Promise<SyncToken> {

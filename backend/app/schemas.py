@@ -48,12 +48,17 @@ class SaveResponse(BaseModel):
 
 class CollectionOut(BaseModel):
     id: UUID
+    domain: str | None = None
     name: str
     description: str | None = None
     keywords: list[str] = Field(default_factory=list)
     reel_count: int
     updated_at: datetime
     reels: list[ReelOut] = Field(default_factory=list)
+
+
+class LibraryCountOut(BaseModel):
+    count: int = Field(ge=0)
 
 
 class SyncTokenResponse(BaseModel):

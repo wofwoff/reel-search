@@ -169,6 +169,40 @@ GENERIC_LABEL_WORDS = STOP_WORDS | {
     "users",
 }
 
+COLLECTION_DOMAINS = {
+    "Arts & Creativity",
+    "Food & Cooking",
+    "Technology",
+    "Career & Education",
+    "Health & Fitness",
+    "Entertainment",
+    "Travel & Places",
+    "Business & Finance",
+    "Lifestyle",
+    "Other",
+}
+
+SOURCE_ONLY_COLLECTION_NAMES = {
+    "claude code",
+    "github",
+    "github repositories",
+    "instagram",
+    "youtube",
+}
+
+DOMAIN_FALLBACK_NAMES = {
+    "Arts & Creativity": "Creative Tools",
+    "Food & Cooking": "Cooking",
+    "Technology": "Developer Tools",
+    "Career & Education": "Career Development",
+    "Health & Fitness": "Wellbeing",
+    "Entertainment": "Entertainment",
+    "Travel & Places": "Travel",
+    "Business & Finance": "Business",
+    "Lifestyle": "Lifestyle",
+    "Other": "Saved Ideas",
+}
+
 
 @dataclass(frozen=True)
 class CollectionDraft:
@@ -176,6 +210,7 @@ class CollectionDraft:
     description: str
     keywords: list[str]
     reel_ids: list[str]
+    domain: str = "Other"
 
 
 def _tokenize(text: str) -> list[str]:
@@ -333,9 +368,60 @@ def _collection_name(cluster: list[int], token_lists: list[list[str]], fallback_
     return (name or f"Collection {fallback_index}", [_title_case(term) for term in keywords[:5]])
 
 
-def build_collections(reels: list[dict[str, Any]]) -> list[CollectionDraft]:
+def _semantic_collections(
+    reels: list[dict[str, Any]],
+    semantic_groups: list[dict[str, Any]],
+) -> list[CollectionDraft]:
+    reel_ids = {str(reel["id"]) for reel in reels}
+    assigned: set[str] = set()
+    drafts: list[CollectionDraft] = []
+
+    for group in semantic_groups:
+        domain = str(group.get("domain") or "Other").strip()
+        if domain not in COLLECTION_DOMAINS:
+            domain = "Other"
+
+        name = str(group.get("name") or "").strip()
+        if name.lower() in SOURCE_ONLY_COLLECTION_NAMES:
+            name = DOMAIN_FALLBACK_NAMES[domain]
+        if not name:
+            name = DOMAIN_FALLBACK_NAMES[domain]
+
+        valid_group_ids: list[str] = []
+        for raw_reel_id in group.get("reel_ids") or []:
+            reel_id = str(raw_reel_id)
+            if reel_id in reel_ids and reel_id not in assigned:
+                assigned.add(reel_id)
+                valid_group_ids.append(reel_id)
+        if not valid_group_ids:
+            continue
+
+        keywords = [str(keyword).strip() for keyword in (group.get("keywords") or []) if str(keyword).strip()]
+        description = str(group.get("description") or f"Saved reels about {name.lower()}.").strip()
+        drafts.append(
+            CollectionDraft(
+                name=name,
+                description=description,
+                keywords=keywords[:5],
+                reel_ids=valid_group_ids,
+                domain=domain,
+            )
+        )
+
+    missing_reels = [reel for reel in reels if str(reel["id"]) not in assigned]
+    drafts.extend(build_collections(missing_reels))
+    return drafts
+
+
+def build_collections(
+    reels: list[dict[str, Any]],
+    semantic_groups: list[dict[str, Any]] | None = None,
+) -> list[CollectionDraft]:
     if not reels:
         return []
+
+    if semantic_groups is not None:
+        return _semantic_collections(reels, semantic_groups)
 
     token_lists = [_tokenize(_text_for_reel(row)) for row in reels]
     vectors = _tfidf_vectors(token_lists)

@@ -2,8 +2,9 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Collection,
   fetchCollections,
+  fetchCollectionReels,
   fetchHealth,
-  fetchReels,
+  fetchLibraryCount,
   getStoredSyncIdentity,
   Health,
   Reel,
@@ -15,6 +16,7 @@ import {
   deleteReel,
   setStoredSyncIdentity
 } from "./api";
+import CollectionGallery from "./CollectionGallery";
 import { supabase } from "./supabaseClient";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -308,6 +310,7 @@ function ReelModal({ reel, onClose, onDeleteSuccess }: { reel: Reel; onClose: ()
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [library, setLibrary] = useState<Reel[]>([]);
+  const [libraryTotal, setLibraryTotal] = useState(0);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [url, setUrl] = useState("");
@@ -319,6 +322,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [selectedReel, setSelectedReel] = useState<Reel | null>(null);
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
+  const [collectionLoading, setCollectionLoading] = useState(false);
   const [reclustering, setReclustering] = useState(false);
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -364,18 +368,15 @@ export default function App() {
 
   async function refreshLibrary() {
     try {
-      const reels = await fetchReels();
-      setLibrary(reels);
-      try {
-        const groupedCollections = await fetchCollections();
-        setCollections(groupedCollections);
-      } catch (collectionsErr) {
-        console.error("Failed to fetch collections:", collectionsErr);
-        setCollections([]);
-      }
+      const [countResult, groupedCollections] = await Promise.all([
+        fetchLibraryCount(),
+        fetchCollections()
+      ]);
+      setLibraryTotal(countResult.count);
+      setCollections(groupedCollections);
     } catch (err) {
-      console.error("Failed to fetch reels:", err);
-      setLibrary([]);
+      console.error("Failed to fetch library overview:", err);
+      setLibraryTotal(0);
       setCollections([]);
     }
   }
@@ -455,7 +456,7 @@ export default function App() {
     if (importUserId && importSyncToken) {
       // 3. Validate the credentials with the backend before saving them to localStorage
       try {
-        const validateRes = await fetch(`${API_BASE}/api/reels`, {
+        const validateRes = await fetch(`${API_BASE}/api/reels/count`, {
           headers: {
             "X-Reel-User-Id": importUserId,
             "X-Reel-Sync-Token": importSyncToken,
@@ -485,12 +486,15 @@ export default function App() {
     setReclustering(true);
     setError("");
     try {
-      const groupedCollections = await reclusterCollections();
-      const reels = await fetchReels();
+      const [groupedCollections, countResult] = await Promise.all([
+        reclusterCollections(),
+        fetchLibraryCount()
+      ]);
       setCollections(groupedCollections);
-      setLibrary(reels);
+      setLibraryTotal(countResult.count);
       if (selectedCollectionId && !groupedCollections.some((collection) => collection.id === selectedCollectionId)) {
         setSelectedCollectionId(null);
+        setLibrary([]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to refresh collections");
@@ -653,17 +657,33 @@ export default function App() {
   function handleReelDelete(deletedId: string) {
     setLibrary((prev) => prev.filter((r) => r.id !== deletedId));
     setResults((prev) => prev.filter((r) => r.id !== deletedId));
+    setLibraryTotal((prev) => Math.max(0, prev - 1));
+    void refreshLibrary();
   }
-
-  // Filter by selected collection
-  const filteredLibrary = useMemo(() => {
-    if (!selectedCollectionId) return library;
-    return library.filter((reel) => reel.collection_id === selectedCollectionId);
-  }, [library, selectedCollectionId]);
 
   const selectedCollection = useMemo(() => {
     return collections.find((collection) => collection.id === selectedCollectionId) ?? null;
   }, [collections, selectedCollectionId]);
+
+  async function openCollection(collection: Collection) {
+    setSelectedCollectionId(collection.id);
+    setResults([]);
+    setLibrary([]);
+    setCollectionLoading(true);
+    setError("");
+    try {
+      setLibrary(await fetchCollectionReels(collection.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load this collection");
+    } finally {
+      setCollectionLoading(false);
+    }
+  }
+
+  function closeCollection() {
+    setSelectedCollectionId(null);
+    setLibrary([]);
+  }
 
   if (isAuthLoading) {
     return (
@@ -683,8 +703,8 @@ export default function App() {
     <div className="min-h-screen flex flex-col max-w-full overflow-x-hidden selection:bg-primary-fixed selection:text-on-primary-fixed">
       {/* TopNavBar */}
       <header className="fixed top-0 w-full z-50 bg-surface/80 backdrop-blur-md border-b border-outline-variant/30 shadow-sm">
-        <div className="flex justify-between items-center h-16 px-gutter max-w-container-max mx-auto">
-          <div className="flex items-center gap-8">
+        <div className="app-shell flex h-16 items-center justify-between">
+          <div className="flex min-w-0 items-center gap-4 md:gap-8">
             <div className="flex items-center gap-2">
               <img src="/logo.png" alt="ReelMind Logo" className="w-8 h-8 rounded-full object-cover shrink-0" />
               <span className="font-headline-sm text-headline-sm font-bold text-primary">ReelMind</span>
@@ -705,7 +725,7 @@ export default function App() {
                 href="#library-section" 
                 onClick={(e) => {
                   e.preventDefault();
-                  setSelectedCollectionId(null);
+                  closeCollection();
                   document.getElementById("library-section")?.scrollIntoView({ behavior: "smooth" });
                 }}
               >
@@ -715,7 +735,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-4">
             {health && (
-              <div className="hidden lg:flex items-center gap-2 bg-surface-container-low px-4 py-1.5 rounded-full border border-outline-variant/20 text-xs text-on-surface-variant font-medium">
+              <div className="hidden xl:flex items-center gap-2 bg-surface-container-low px-4 py-1.5 rounded-full border border-outline-variant/20 text-xs text-on-surface-variant font-medium">
                 <div className={`w-2 h-2 rounded-full ${health.ok ? "bg-tertiary" : "bg-error"}`}></div>
                 <span>{health.ok ? "Supabase, GCS & Gemini Connected" : `Missing configuration: ${health.missing_env.join(", ")}`}</span>
               </div>
@@ -725,7 +745,7 @@ export default function App() {
                 document.getElementById("ingest-input")?.focus();
                 window.scrollTo({ top: 0, behavior: "smooth" });
               }}
-              className="bg-primary text-on-primary px-6 py-2 rounded-full font-label-md text-label-md bouncy-interaction shadow-md hover:bg-primary/90 transition-all"
+              className="min-h-11 bg-primary text-on-primary px-4 sm:px-6 py-2 rounded-full font-label-md text-xs sm:text-label-md bouncy-interaction shadow-md hover:bg-primary/90 transition-all"
             >
               Ingest URL
             </button>
@@ -735,30 +755,34 @@ export default function App() {
 
       <main className="pt-24 pb-16 flex-grow">
         {/* Hero Section */}
-        <section className="max-w-container-max mx-auto px-gutter py-12 text-center">
-          <div className="max-w-3xl mx-auto space-y-8">
-            <h1 className="font-headline-lg text-headline-lg-mobile md:text-headline-lg text-on-surface leading-tight">Turn scrolls into insights.</h1>
-            <p className="font-body-lg text-body-lg text-on-surface-variant max-w-2xl mx-auto">
-              ReelMind captures the wisdom hidden in your social feed. Paste an Instagram or YouTube URL, or upload local files, and let our AI distill them into actionable takeaways.
-            </p>
+        <section className="app-shell py-10 text-center md:py-14">
+          <div className="space-y-8">
+            <div className="mx-auto max-w-3xl space-y-6">
+              <h1 className="text-balance font-headline-lg text-headline-lg-mobile leading-tight text-on-surface md:text-headline-lg">Turn scrolls into insights.</h1>
+              <p className="text-pretty font-body-lg text-body-lg text-on-surface-variant max-w-2xl mx-auto">
+                ReelMind captures the wisdom hidden in your social feed. Paste an Instagram or YouTube URL, or upload local files, and let our AI distill them into actionable takeaways.
+              </p>
+            </div>
 
-            <form onSubmit={onSave} className="space-y-4">
-              <div className="relative max-w-2xl mx-auto soft-glow-focus group px-4 sm:px-0">
-                <div className="flex items-center bg-surface-container-low rounded-full p-1.5 sm:p-2 border border-outline-variant shadow-lg group-hover:shadow-xl transition-all duration-300">
-                  <span className="material-symbols-outlined ml-2 sm:ml-4 text-primary shrink-0">link</span>
-                  <input 
-                    id="ingest-input"
-                    className="flex-grow min-w-0 w-full bg-transparent border-none focus:ring-0 px-2 sm:px-4 font-body-md text-body-md text-on-surface-variant placeholder:text-outline outline-none text-ellipsis" 
-                    placeholder="Paste Instagram or YouTube URL here..." 
-                    type="text"
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                    disabled={saveState === "downloading" || saveState === "uploading" || saveState === "embedding"}
-                  />
+            <form onSubmit={onSave} className="save-form-width space-y-4">
+              <div className="soft-glow-focus group">
+                <div className="save-control-shell rounded-[16px] border border-outline-variant bg-surface-container-low p-2 shadow-md transition-shadow duration-200 group-hover:shadow-lg sm:rounded-full">
+                  <div className="save-input-cluster">
+                    <span className="material-symbols-outlined ml-2 shrink-0 text-primary sm:ml-3">link</span>
+                    <input
+                      id="ingest-input"
+                      className="save-url-input bg-transparent border-none focus:ring-0 px-3 sm:px-4 font-body-md text-body-md text-on-surface-variant placeholder:text-outline outline-none text-ellipsis"
+                      placeholder="Paste Instagram or YouTube URL here..."
+                      type="text"
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      disabled={saveState === "downloading" || saveState === "uploading" || saveState === "embedding"}
+                    />
+                  </div>
                   <button 
                     type="submit"
                     disabled={saveState === "downloading" || saveState === "uploading" || saveState === "embedding" || (!url.trim() && files.length === 0)}
-                    className="bg-primary text-on-primary px-4 sm:px-8 py-2 sm:py-3 rounded-full font-label-md text-label-md bouncy-interaction shadow-[0_0_15px_rgba(148,73,46,0.2)] hover:shadow-[0_0_20px_rgba(148,73,46,0.4)] transition-all flex items-center gap-2 disabled:opacity-50 shrink-0"
+                    className="save-analyze-button bg-primary text-on-primary px-5 sm:px-8 py-2 rounded-full font-label-md text-label-md bouncy-interaction transition-colors flex items-center gap-2 disabled:opacity-50 shrink-0 hover:bg-primary/90"
                   >
                     {saveState === "downloading" || saveState === "uploading" || saveState === "embedding" ? (
                       <span className="material-symbols-outlined animate-spin text-[18px] sm:text-[20px]">sync</span>
@@ -782,7 +806,7 @@ export default function App() {
               </div>
 
               {showUploadArea && (
-                <div className="max-w-2xl mx-auto border-2 border-dashed border-outline-variant/50 bg-surface-container-low rounded-lg p-6 flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-surface-container-high transition-colors relative">
+                <div className="mx-auto flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-[16px] border-2 border-dashed border-outline-variant/50 bg-surface-container-low p-6 transition-colors hover:bg-surface-container-high relative">
                   <input 
                     type="file" 
                     multiple
@@ -804,19 +828,18 @@ export default function App() {
         </section>
 
         {/* Stats Bar */}
-        <section className="max-w-container-max mx-auto px-gutter mb-16 animate-fade-in">
-          <div className="bg-surface-container-low rounded-lg py-4 sm:py-6 px-4 sm:px-12 flex flex-wrap justify-around items-center border border-outline-variant/30 gap-6 sm:gap-8">
-            <div className="flex items-center gap-3">
+        <section className="app-shell mb-10 animate-fade-in md:mb-14">
+          <div className="stats-grid overflow-hidden rounded-[16px] border border-outline-variant/30 bg-surface-container-low">
+            <div className="stat-item flex items-center justify-center gap-3">
               <div className="w-10 h-10 rounded-full bg-primary-fixed flex items-center justify-center text-on-primary-fixed-variant">
                 <span className="material-symbols-outlined">video_library</span>
               </div>
               <div>
-                <p className="font-headline-sm text-[20px] text-on-surface font-bold">{library.length}</p>
+                <p className="font-headline-sm text-[20px] text-on-surface font-bold">{libraryTotal}</p>
                 <p className="font-label-sm text-label-sm text-on-surface-variant">Archive Items</p>
               </div>
             </div>
-            <div className="h-8 w-px bg-outline-variant hidden lg:block"></div>
-            <div className="flex items-center gap-3">
+            <div className="stat-item flex items-center justify-center gap-3">
               <div className="w-10 h-10 rounded-full bg-tertiary-fixed flex items-center justify-center text-on-tertiary-fixed-variant">
                 <span className="material-symbols-outlined">track_changes</span>
               </div>
@@ -825,8 +848,7 @@ export default function App() {
                 <p className="font-label-sm text-label-sm text-on-surface-variant">Recall Hits</p>
               </div>
             </div>
-            <div className="h-8 w-px bg-outline-variant hidden lg:block"></div>
-            <div className="flex items-center gap-3">
+            <div className="stat-item flex items-center justify-center gap-3">
               <div className="w-10 h-10 rounded-full bg-secondary-fixed flex items-center justify-center text-on-secondary-fixed-variant">
                 <span className="material-symbols-outlined">auto_awesome_motion</span>
               </div>
@@ -835,72 +857,26 @@ export default function App() {
                 <p className="font-label-sm text-label-sm text-on-surface-variant">Collections</p>
               </div>
             </div>
-            <div className="h-8 w-px bg-outline-variant hidden lg:block"></div>
-            <div className="flex items-center gap-3">
+            <div className="stat-item flex items-center justify-center gap-3">
               <div className="w-10 h-10 rounded-full bg-primary-fixed flex items-center justify-center text-on-primary-fixed-variant">
                 <span className="material-symbols-outlined">workspace_premium</span>
               </div>
               <div>
-                <p className="font-headline-sm text-[20px] text-on-surface font-bold truncate max-w-[120px]" title={topCollection}>{topCollection}</p>
+                <p className="font-headline-sm text-[20px] text-on-surface font-bold truncate max-w-[160px]" title={topCollection}>{topCollection}</p>
                 <p className="font-label-sm text-label-sm text-on-surface-variant">Top Collection</p>
               </div>
             </div>
           </div>
         </section>
 
-        {/* Content Area with Sidebar */}
-        <section id="library-section" className="max-w-container-max mx-auto px-gutter grid grid-cols-1 md:grid-cols-[240px_1fr] gap-12">
-          {/* Sidebar Quick Filters */}
-          <aside className="space-y-8">
-            <div>
-              <h3 className="font-label-md text-label-md text-primary mb-4 uppercase tracking-widest">Library</h3>
-              <nav className="flex flex-col gap-1">
-                <button 
-                  onClick={() => setSelectedCollectionId(null)}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-full font-body-md transition-all text-left w-full ${!selectedCollectionId ? "bg-primary-container text-on-primary-container font-bold" : "hover:bg-surface-container-high text-on-surface-variant"}`}
-                >
-                  <span className="material-symbols-outlined">grid_view</span>
-                  All Reels
-                </button>
-              </nav>
-            </div>
-            {collections.length > 0 && (
-              <div>
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-label-md text-label-md text-primary uppercase tracking-widest">Collections</h3>
-                  <button
-                    type="button"
-                    onClick={handleRecluster}
-                    disabled={reclustering}
-                    className="text-primary hover:bg-primary/5 p-1.5 rounded-full transition-all disabled:opacity-50"
-                    title="Refresh collections"
-                  >
-                    <span className={`material-symbols-outlined text-[18px] ${reclustering ? "animate-spin" : ""}`}>sync</span>
-                  </button>
-                </div>
-                <nav className="flex flex-col gap-1 max-h-[45vh] overflow-y-auto custom-scrollbar pr-1">
-                  {collections.map((collection) => (
-                    <button
-                      key={collection.id}
-                      onClick={() => setSelectedCollectionId(selectedCollectionId === collection.id ? null : collection.id)}
-                      className={`flex items-center justify-between px-4 py-2 rounded-full font-body-md transition-all text-left w-full text-xs ${selectedCollectionId === collection.id ? "bg-primary-container text-on-primary-container font-bold" : "hover:bg-surface-container-high text-on-surface-variant"}`}
-                      title={collection.description ?? collection.name}
-                    >
-                      <span className="truncate mr-2 font-medium">{collection.name}</span>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${selectedCollectionId === collection.id ? "bg-primary/25 text-on-primary-container" : "bg-surface-container-high text-on-surface-variant"}`}>
-                        {collection.reel_count}
-                      </span>
-                    </button>
-                  ))}
-                </nav>
-              </div>
-            )}
-
+        {/* Library tools and collection-first gallery */}
+        <section id="library-section" className="app-shell space-y-10 md:space-y-14">
+          <aside className="utility-grid gap-4">
             {/* iOS/macOS Shortcut Guide */}
-            <div className="border border-outline-variant/35 rounded-lg p-4 bg-surface-container-low space-y-4">
+            <div className="rounded-[16px] border border-outline-variant/40 bg-surface-container-low p-5 space-y-4">
               <button 
                 onClick={() => setShowShortcutGuide(!showShortcutGuide)}
-                className="flex items-center justify-between w-full font-label-md text-label-md text-primary uppercase tracking-widest text-left"
+                className="flex items-center justify-between w-full font-label-md text-label-md text-primary text-left"
               >
                 <span className="flex items-center gap-2">
                   <span className="material-symbols-outlined text-[18px]">cell_tower</span>
@@ -965,7 +941,7 @@ export default function App() {
             </div>
 
             {/* Sync Devices Guide */}
-            <div className="border border-outline-variant/35 rounded-lg p-4 bg-surface-container-low space-y-4">
+            <div className="rounded-[16px] border border-outline-variant/40 bg-surface-container-low p-5 space-y-4">
               <button 
                 onClick={async () => {
                   setShowSyncModal(true);
@@ -982,7 +958,7 @@ export default function App() {
                     setSyncError(e instanceof Error ? e.message : "Failed to create sync link");
                   }
                 }}
-                className="flex items-center justify-between w-full font-label-md text-label-md text-primary uppercase tracking-widest text-left"
+                className="flex items-center justify-between w-full font-label-md text-label-md text-primary text-left"
               >
                 <span className="flex items-center gap-2">
                   <span className="material-symbols-outlined text-[18px]">sync</span>
@@ -995,15 +971,32 @@ export default function App() {
             </div>
           </aside>
 
-          {/* Library Grid */}
+          {/* Search, collection covers, and on-demand collection reels */}
           <div className="space-y-8">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 pb-4 border-b border-outline-variant/30">
-              <h2 className="font-headline-md text-headline-md text-on-surface">
-                {selectedCollection ? selectedCollection.name : "Your Archived Insights"}
-              </h2>
+            <div className="flex flex-col justify-between items-start gap-4 pb-4 border-b border-outline-variant/30 lg:flex-row lg:items-end">
+              <div>
+                {selectedCollection && (
+                  <button
+                    type="button"
+                    onClick={closeCollection}
+                    className="mb-3 inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+                    All collections
+                  </button>
+                )}
+                <h2 className="font-headline-md text-headline-md text-on-surface">
+                  {selectedCollection ? selectedCollection.name : "Your Library"}
+                </h2>
+                <p className="mt-2 text-sm text-on-surface-variant">
+                  {selectedCollection
+                    ? `${selectedCollection.domain || "Other"} · ${selectedCollection.reel_count} ${selectedCollection.reel_count === 1 ? "reel" : "reels"}`
+                    : `${libraryTotal} saved reels · ${activeCollectionsCount} ${activeCollectionsCount === 1 ? "collection" : "collections"}`}
+                </p>
+              </div>
               
               {/* Semantic search row */}
-              <form onSubmit={onSearch} className="flex items-center gap-2 bg-surface-container-low rounded-full pl-4 pr-1 py-1 border border-outline-variant shadow-sm focus-within:border-primary transition-all max-w-sm w-full">
+              <form onSubmit={onSearch} className="flex min-h-11 w-full max-w-lg items-center gap-2 rounded-full border border-outline-variant bg-surface-container-low py-1 pl-4 pr-1 shadow-sm transition-colors focus-within:border-primary">
                 <span className="material-symbols-outlined text-[20px] text-outline">search</span>
                 <input 
                   className="bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-outline text-on-surface-variant outline-none min-w-0 w-full mr-2" 
@@ -1043,7 +1036,7 @@ export default function App() {
                   <h3 className="font-label-md text-label-md text-primary uppercase tracking-widest">Relevance Search Matches</h3>
                   <button onClick={() => setResults([])} className="text-xs text-outline hover:text-primary font-bold">Clear Matches</button>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                <div className="reel-grid">
                   {results.map((reel) => (
                     <ReelCard 
                       key={reel.id} 
@@ -1063,19 +1056,35 @@ export default function App() {
               </div>
             )}
 
-            {/* Default Shelf Grid */}
-            {!searching && results.length === 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-                {filteredLibrary.length > 0 ? (
-                  filteredLibrary.map((reel) => (
-                    <ReelCard key={reel.id} reel={reel} onClick={() => setSelectedReel(reel)} />
-                  ))
+            {!searching && results.length === 0 && !selectedCollection && (
+              <CollectionGallery
+                collections={collections}
+                refreshing={reclustering}
+                onRefresh={handleRecluster}
+                onSelect={openCollection}
+              />
+            )}
+
+            {!searching && results.length === 0 && selectedCollection && (
+              <div className="space-y-6">
+                {selectedCollection.description && (
+                  <p className="max-w-2xl text-pretty text-on-surface-variant">{selectedCollection.description}</p>
+                )}
+                {collectionLoading ? (
+                  <div className="reel-grid" aria-label="Loading collection reels">
+                    {[0, 1, 2].map((index) => (
+                      <div key={index} className="h-[480px] animate-pulse rounded-[16px] bg-surface-container-low" />
+                    ))}
+                  </div>
+                ) : library.length > 0 ? (
+                  <div className="reel-grid">
+                    {library.map((reel) => (
+                      <ReelCard key={reel.id} reel={reel} onClick={() => setSelectedReel(reel)} />
+                    ))}
+                  </div>
                 ) : (
-                  <div className="col-span-full py-16 text-center space-y-4 border-2 border-dashed border-outline-variant/30 rounded-lg text-outline">
-                    <span className="material-symbols-outlined text-[48px]">video_library</span>
-                    <p className="font-body-md text-body-md text-on-surface-variant max-w-sm mx-auto">
-                      No reels found in this view. Ingest some URLs above to see them displayed here.
-                    </p>
+                  <div className="rounded-[16px] border border-dashed border-outline-variant/40 py-14 text-center text-on-surface-variant">
+                    No reels are available in this collection yet.
                   </div>
                 )}
               </div>
@@ -1086,7 +1095,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="w-full py-12 mt-auto bg-surface-container-low border-t border-outline-variant/20">
-        <div className="flex flex-col md:flex-row justify-between items-center px-gutter max-w-container-max mx-auto gap-4">
+        <div className="app-shell flex flex-col items-center justify-between gap-4 md:flex-row">
           <div className="flex flex-col items-center md:items-start gap-2">
             <div className="flex items-center gap-2">
               <img src="/logo.png" alt="ReelMind Logo" className="w-6 h-6 rounded-full object-cover shrink-0" />
