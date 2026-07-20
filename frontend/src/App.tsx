@@ -1,9 +1,9 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Collection,
-  fetchCollections,
   fetchCollectionReels,
   fetchHealth,
+  fetchLibraryOverview,
   fetchLibraryCount,
   getStoredSyncIdentity,
   Health,
@@ -367,16 +367,18 @@ export default function App() {
   }
 
   async function refreshLibrary() {
-    try {
-      const [countResult, groupedCollections] = await Promise.all([
-        fetchLibraryCount(),
-        fetchCollections()
-      ]);
-      setLibraryTotal(countResult.count);
-      setCollections(groupedCollections);
-    } catch (err) {
-      console.error("Failed to fetch library overview:", err);
-      setLibraryTotal(0);
+    const overview = await fetchLibraryOverview();
+
+    if (overview.count !== null) {
+      setLibraryTotal(overview.count);
+    } else {
+      console.error("Failed to fetch library count:", overview.countError);
+    }
+
+    if (overview.collections !== null) {
+      setCollections(overview.collections);
+    } else {
+      console.error("Failed to fetch collections:", overview.collectionsError);
       setCollections([]);
     }
   }

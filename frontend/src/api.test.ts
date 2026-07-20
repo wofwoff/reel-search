@@ -8,7 +8,7 @@ vi.mock("./supabaseClient", () => ({
   }
 }));
 
-import { fetchCollectionReels, fetchLibraryCount } from "./api";
+import { fetchCollectionReels, fetchLibraryCount, fetchLibraryOverview } from "./api";
 
 const fetchMock = vi.fn();
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -42,5 +42,22 @@ describe("library overview API", () => {
 
     await expect(fetchCollectionReels("design/tools")).resolves.toEqual([]);
     expect(fetchMock).toHaveBeenCalledWith(`${apiBase}/api/collections/design%2Ftools/reels`, { headers: {} });
+  });
+
+  it("keeps the real saved-reel count when collections fail to load", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ count: 79 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: "Collections unavailable" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      }));
+
+    await expect(fetchLibraryOverview()).resolves.toMatchObject({
+      count: 79,
+      collections: null
+    });
   });
 });

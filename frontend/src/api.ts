@@ -37,6 +37,13 @@ export type LibraryCount = {
   count: number;
 };
 
+export type LibraryOverview = {
+  count: number | null;
+  collections: Collection[] | null;
+  countError: unknown | null;
+  collectionsError: unknown | null;
+};
+
 export type Health = {
   ok: boolean;
   database_configured: boolean;
@@ -112,6 +119,20 @@ export async function fetchLibraryCount(): Promise<LibraryCount> {
 export async function fetchCollections(): Promise<Collection[]> {
   const headers = await getAuthHeaders();
   return parseResponse<Collection[]>(await fetch(`${API_BASE}/api/collections`, { headers }));
+}
+
+export async function fetchLibraryOverview(): Promise<LibraryOverview> {
+  const [countResult, collectionsResult] = await Promise.allSettled([
+    fetchLibraryCount(),
+    fetchCollections()
+  ]);
+
+  return {
+    count: countResult.status === "fulfilled" ? countResult.value.count : null,
+    collections: collectionsResult.status === "fulfilled" ? collectionsResult.value : null,
+    countError: countResult.status === "rejected" ? countResult.reason : null,
+    collectionsError: collectionsResult.status === "rejected" ? collectionsResult.reason : null
+  };
 }
 
 export async function fetchCollectionReels(collectionId: string): Promise<Reel[]> {
