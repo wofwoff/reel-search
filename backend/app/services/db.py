@@ -57,7 +57,11 @@ class ReelRepository:
     def _connect(self):
         if not self.settings.database_url:
             raise DatabaseError("DATABASE_URL is not configured")
-        return psycopg.connect(self.settings.database_url, row_factory=dict_row)
+        return psycopg.connect(
+            self.settings.database_url,
+            row_factory=dict_row,
+            prepare_threshold=None,
+        )
 
     def find_by_canonical_url(self, canonical_url: str | None, user_id: str) -> ReelOut | None:
         if not canonical_url:
