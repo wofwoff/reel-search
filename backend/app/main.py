@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 import json
@@ -230,29 +231,35 @@ async def save_reel(
             gcs_uri = json.dumps(gcs_uris)
             mime_type = guess_mime_type(local_paths[0])
 
-        embedding = await run_in_threadpool(
-            get_embedder().embed_video,
-            gcs_uri,
-            mime_type,
-            metadata["title"],
+        async def _fetch_summary():
+            try:
+                return await run_in_threadpool(
+                    get_embedder().generate_summary,
+                    gcs_uri,
+                    mime_type,
+                )
+            except Exception:
+                return None
+
+        embedding, summary_data = await asyncio.gather(
+            run_in_threadpool(
+                get_embedder().embed_video,
+                gcs_uri,
+                mime_type,
+                metadata["title"],
+            ),
+            _fetch_summary(),
         )
 
         title_val = metadata["title"]
         summary_val = None
         actionable_items_val = None
         resources_val = None
-        try:
-            summary_data = await run_in_threadpool(
-                get_embedder().generate_summary,
-                gcs_uri,
-                mime_type,
-            )
+        if summary_data and isinstance(summary_data, dict):
             title_val = summary_data.get("title") or metadata["title"]
             summary_val = summary_data.get("summary")
             actionable_items_val = json.dumps(summary_data.get("actionable_items", [])) if "actionable_items" in summary_data else None
             resources_val = json.dumps(summary_data.get("resources", [])) if "resources" in summary_data else None
-        except Exception:
-            pass
 
         source_url = metadata["webpage_url"] or url or f"upload:{files[0].filename if files else local_paths[0].name}"
         reel = await run_in_threadpool(

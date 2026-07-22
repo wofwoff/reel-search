@@ -76,6 +76,8 @@ def download_media(url: str) -> MediaDownload:
                 "match_filter": _reject_long_youtube_videos,
             }
         )
+    else:
+        options["format"] = "best[ext=mp4][height<=720]/best[height<=720]/best[ext=mp4]/best"
 
     settings = get_settings()
     if settings.yt_dlp_cookies_from_browser:
