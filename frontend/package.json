@@ -2,11 +2,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:ios": "tsc -b && vite build --mode ios",
     "preview": "vite preview",
     "test": "vitest run",
     "cap:sync": "npx cap sync",
     "cap:open": "npx cap open ios",
-    "cap:build": "npm run build && npx cap sync"
+    "cap:build": "npm run build:ios && npx cap sync"
   },
   "dependencies": {
     "@capacitor/core": "^8.4.1",

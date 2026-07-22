@@ -4,7 +4,7 @@ import json
 from time import time
 from uuid import UUID
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Depends
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Depends, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -153,6 +153,7 @@ def issue_sync_token(user_id: str = Depends(get_current_user_id)) -> SyncTokenRe
 
 @app.post("/api/reels", response_model=SaveResponse)
 async def save_reel(
+    background_tasks: BackgroundTasks,
     url: str | None = Form(default=None),
     files: list[UploadFile] = File(default=[]),
     user_id: str = Depends(get_current_user_id),
@@ -271,7 +272,7 @@ async def save_reel(
             actionable_items=actionable_items_val,
             resources=resources_val,
         )
-        await run_in_threadpool(recluster_user_collections, repo, user_id)
+        background_tasks.add_task(run_in_threadpool, recluster_user_collections, repo, user_id)
         return SaveResponse(reel=reel, duplicate=False, ingest_source=ingest_source)
     except (DatabaseError, EmbeddingError, StorageError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -284,6 +285,7 @@ async def save_reel(
 
 @app.post("/api/reels/shortcut", response_model=SaveResponse)
 async def save_reel_shortcut(
+    background_tasks: BackgroundTasks,
     url: str = Form(...),
     token: str = Form(...),
     user_id: str = Form(...),
@@ -294,7 +296,7 @@ async def save_reel_shortcut(
     
     if not (is_global_valid or is_sync_valid):
         raise HTTPException(status_code=401, detail="Invalid shortcut token")
-    return await save_reel(url=url, files=[], user_id=user_id)
+    return await save_reel(background_tasks=background_tasks, url=url, files=[], user_id=user_id)
 
 
 @app.post("/api/search", response_model=list[SearchResult])
@@ -312,6 +314,7 @@ async def search_reels(
 @app.delete("/api/reels/{reel_id}")
 async def delete_reel(
     reel_id: UUID,
+    background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user_id),
 ):
     repo = get_repository()
@@ -324,7 +327,7 @@ async def delete_reel(
         if not success:
             raise HTTPException(status_code=404, detail="Reel not found")
 
-        await run_in_threadpool(recluster_user_collections, repo, user_id)
+        background_tasks.add_task(run_in_threadpool, recluster_user_collections, repo, user_id)
 
         if reel.gcs_uri:
             try:
