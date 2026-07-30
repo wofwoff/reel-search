@@ -58,6 +58,41 @@ class GcsStorage:
             gcs_uris.append(f"gs://{bucket.name}/{object_name}")
         return gcs_uris
 
+    def upload_thumbnail(self, path: Path) -> str:
+        if not self.settings.reel_search_gcs_bucket:
+            raise StorageError("REEL_SEARCH_GCS_BUCKET is not configured")
+
+        content_type = guess_mime_type(path)
+        client = storage.Client(project=self.settings.google_cloud_project or None)
+        bucket = client.bucket(self.settings.reel_search_gcs_bucket)
+        filename = f"{uuid4()}.jpg"
+        object_name = f"thumbnails/{filename}"
+        blob = bucket.blob(object_name)
+        blob.upload_from_filename(str(path), content_type=content_type)
+        return filename
+
+    def download_blob(self, object_name: str) -> bytes:
+        if not self.settings.reel_search_gcs_bucket:
+            raise StorageError("REEL_SEARCH_GCS_BUCKET is not configured")
+        client = storage.Client(project=self.settings.google_cloud_project or None)
+        bucket = client.bucket(self.settings.reel_search_gcs_bucket)
+        blob = bucket.blob(object_name)
+        if not blob.exists():
+            raise StorageError(f"Blob {object_name} not found")
+        return blob.download_as_bytes()
+
+    def download_gcs_uri_to_file(self, gcs_uri: str, target_path: Path) -> None:
+        if not gcs_uri.startswith("gs://"):
+            raise StorageError(f"Invalid GCS URI: {gcs_uri}")
+        parts = gcs_uri[5:].split("/", 1)
+        if len(parts) < 2:
+            raise StorageError(f"Invalid GCS URI: {gcs_uri}")
+        bucket_name, object_name = parts
+        client = storage.Client(project=self.settings.google_cloud_project or None)
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(object_name)
+        blob.download_to_filename(str(target_path))
+
     def delete_video(self, gcs_uri: str) -> None:
         import json
         try:

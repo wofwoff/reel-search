@@ -1,4 +1,4 @@
-import type { Collection } from "./api";
+import { getReelThumbnailUrl, type Collection } from "./api";
 
 
 type CollectionGalleryProps = {
@@ -7,6 +7,7 @@ type CollectionGalleryProps = {
   onRefresh: () => void;
   onSelect: (collection: Collection) => void;
 };
+
 
 
 const DOMAIN_PRESENTATION: Record<string, { icon: string; badge: string }> = {
@@ -43,7 +44,7 @@ function CollectionCard({ collection, onSelect }: { collection: Collection; onSe
         {visiblePreviews.map((reel, index) => (
           <img
             key={reel?.id ?? `fallback-${index}`}
-            src={reel?.thumbnail_url || "/logo.png"}
+            src={getReelThumbnailUrl(reel)}
             alt=""
             loading="lazy"
             decoding="async"

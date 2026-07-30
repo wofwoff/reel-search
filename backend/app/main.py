@@ -5,7 +5,9 @@ import json
 from time import time
 from uuid import UUID
 
+import logging
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Depends, BackgroundTasks
+from fastapi.responses import Response, RedirectResponse
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -16,6 +18,7 @@ from app.services.db import DatabaseError, ReelRepository
 from app.services.embedder import EmbeddingError, VertexEmbeddingProvider
 from app.services.downloader import MediaDownloadError, download_media
 from app.services.storage import GcsStorage, StorageError, guess_mime_type
+from app.services.thumbnail import generate_thumbnail
 from app.services.url_utils import canonicalize_url, is_instagram_url, is_youtube_url
 from app.services.collections import build_collections
 
@@ -261,6 +264,18 @@ async def save_reel(
             actionable_items_val = json.dumps(summary_data.get("actionable_items", [])) if "actionable_items" in summary_data else None
             resources_val = json.dumps(summary_data.get("resources", [])) if "resources" in summary_data else None
 
+        # Attempt to generate and upload a thumbnail from local_paths[0]
+        thumbnail_url_val = metadata.get("thumbnail_url")
+        try:
+            thumb_file = await run_in_threadpool(generate_thumbnail, local_paths[0])
+            if thumb_file and thumb_file.exists():
+                thumb_filename = await run_in_threadpool(get_storage().upload_thumbnail, thumb_file)
+                thumbnail_url_val = f"/api/thumbnails/{thumb_filename}"
+                if thumb_file != local_paths[0] and thumb_file.exists():
+                    thumb_file.unlink(missing_ok=True)
+        except Exception as exc:
+            logging.warning("Failed to generate/upload thumbnail during save: %s", exc)
+
         source_url = metadata["webpage_url"] or url or f"upload:{files[0].filename if files else local_paths[0].name}"
         reel = await run_in_threadpool(
             repo.create_reel,
@@ -269,7 +284,7 @@ async def save_reel(
             title=title_val,
             caption=metadata["caption"],
             creator=metadata["creator"],
-            thumbnail_url=metadata["thumbnail_url"],
+            thumbnail_url=thumbnail_url_val,
             embedding=embedding,
             embedding_model=settings.embedding_model,
             user_id=user_id,
@@ -288,6 +303,51 @@ async def save_reel(
             cleanup()
         elif ingest_source == "upload" and local_path and local_path.exists():
             local_path.unlink(missing_ok=True)
+
+
+@app.get("/api/thumbnails/{filename}")
+async def get_thumbnail(filename: str):
+    try:
+        blob_bytes = await run_in_threadpool(get_storage().download_blob, f"thumbnails/{filename}")
+        return Response(content=blob_bytes, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=31536000"})
+    except StorageError as exc:
+        raise HTTPException(status_code=404, detail="Thumbnail not found") from exc
+
+
+@app.get("/api/reels/{reel_id}/thumbnail")
+async def get_reel_thumbnail(reel_id: UUID, user_id: str = Depends(get_current_user_id)):
+    repo = get_repository()
+    reel = await run_in_threadpool(repo.find_by_id, reel_id, user_id)
+    if not reel:
+        raise HTTPException(status_code=404, detail="Reel not found")
+
+    if reel.thumbnail_url:
+        if reel.thumbnail_url.startswith("/api/thumbnails/"):
+            filename = reel.thumbnail_url.split("/")[-1]
+            return await get_thumbnail(filename)
+        elif reel.thumbnail_url.startswith("http"):
+            return RedirectResponse(reel.thumbnail_url)
+
+    if reel.gcs_uri:
+        try:
+            uris = json.loads(reel.gcs_uri) if reel.gcs_uri.startswith("[") else [reel.gcs_uri]
+            target_gcs_uri = uris[0]
+            with TemporaryDirectory() as temp_dir:
+                ext = Path(target_gcs_uri).suffix or ".mp4"
+                temp_video = Path(temp_dir) / f"temp_vid{ext}"
+                await run_in_threadpool(get_storage().download_gcs_uri_to_file, target_gcs_uri, temp_video)
+                thumb_file = await run_in_threadpool(generate_thumbnail, temp_video)
+                if thumb_file and thumb_file.exists():
+                    thumb_filename = await run_in_threadpool(get_storage().upload_thumbnail, thumb_file)
+                    new_thumb_url = f"/api/thumbnails/{thumb_filename}"
+                    with repo._connect() as conn:
+                        conn.execute("UPDATE reels SET thumbnail_url = %s WHERE id = %s", (new_thumb_url, reel.id))
+                        conn.commit()
+                    return await get_thumbnail(thumb_filename)
+        except Exception as exc:
+            logging.exception("Failed to extract on-demand thumbnail for reel %s: %s", reel_id, exc)
+
+    raise HTTPException(status_code=404, detail="Thumbnail unavailable")
 
 
 @app.post("/api/reels/shortcut", response_model=SaveResponse)

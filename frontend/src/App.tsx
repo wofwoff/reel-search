@@ -14,7 +14,8 @@ import {
   searchReels,
   SearchResult,
   deleteReel,
-  setStoredSyncIdentity
+  setStoredSyncIdentity,
+  getReelThumbnailUrl
 } from "./api";
 import CollectionGallery from "./CollectionGallery";
 import { supabase } from "./supabaseClient";
@@ -48,18 +49,25 @@ function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClic
       onClick={onClick}
       className="reel-card group flex h-full w-full min-w-0 cursor-pointer flex-col rounded-[16px] border border-outline-variant/70 bg-surface-container-lowest p-2.5 text-left shadow-sm transition-[border-color,box-shadow,transform] duration-200 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface sm:p-3"
     >
-      <div className="reel-card__media relative mb-3 flex w-full items-center justify-center overflow-hidden rounded-[12px] bg-surface-variant">
-        {reel.thumbnail_url ? (
-          <img 
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-            src={reel.thumbnail_url} 
-            alt=""
-            loading="lazy"
-            decoding="async"
-          />
-        ) : (
-          <span className="material-symbols-outlined text-[36px] text-outline">video_library</span>
-        )}
+      <div className="reel-card__media relative mb-3 flex w-full aspect-video items-center justify-center overflow-hidden rounded-[12px] bg-surface-variant">
+        <img 
+          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+          src={getReelThumbnailUrl(reel)} 
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={(e) => {
+            e.currentTarget.onerror = null;
+            e.currentTarget.style.display = 'none';
+            const parent = e.currentTarget.parentElement;
+            if (parent && !parent.querySelector('.fallback-icon')) {
+              const icon = document.createElement('span');
+              icon.className = 'material-symbols-outlined text-[36px] text-outline fallback-icon';
+              icon.innerText = 'video_library';
+              parent.appendChild(icon);
+            }
+          }}
+        />
         
         <div className="absolute inset-0 bg-black/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface/90 shadow-md">
@@ -177,14 +185,23 @@ function ReelModal({ reel, onClose, onDeleteSuccess }: { reel: Reel; onClose: ()
 
         <div className="p-6 overflow-y-auto grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6 custom-scrollbar">
           <div className="flex flex-col gap-4">
-            <div className="aspect-[9/12] rounded-lg overflow-hidden bg-surface-variant border border-outline-variant/30">
-              {reel.thumbnail_url ? (
-                <img className="w-full h-full object-cover" src={reel.thumbnail_url} alt="" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-outline">
-                  <span className="material-symbols-outlined text-[48px]">video_library</span>
-                </div>
-              )}
+            <div className="aspect-[9/12] rounded-lg overflow-hidden bg-surface-variant border border-outline-variant/30 flex items-center justify-center">
+              <img 
+                className="w-full h-full object-cover" 
+                src={getReelThumbnailUrl(reel)} 
+                alt="" 
+                onError={(e) => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.style.display = 'none';
+                  const parent = e.currentTarget.parentElement;
+                  if (parent && !parent.querySelector('.fallback-icon')) {
+                    const icon = document.createElement('span');
+                    icon.className = 'material-symbols-outlined text-[48px] text-outline fallback-icon';
+                    icon.innerText = 'video_library';
+                    parent.appendChild(icon);
+                  }
+                }}
+              />
             </div>
 
             <a 

@@ -1,5 +1,16 @@
 import { supabase } from "./supabaseClient";
 
+export function getReelThumbnailUrl(reel?: Reel | null): string {
+  if (!reel) return "/logo.png";
+  if (reel.thumbnail_url) {
+    if (reel.thumbnail_url.startsWith("http://") || reel.thumbnail_url.startsWith("https://")) {
+      return reel.thumbnail_url;
+    }
+    return `${API_BASE}${reel.thumbnail_url}`;
+  }
+  return `${API_BASE}/api/reels/${reel.id}/thumbnail`;
+}
+
 export type Reel = {
   id: string;
   source_url: string;
