@@ -1,4 +1,6 @@
+import { memo } from "react";
 import { getReelThumbnailUrl, type Collection } from "./api";
+import ThumbnailImage from "./ThumbnailImage";
 
 
 type CollectionGalleryProps = {
@@ -24,7 +26,7 @@ const DOMAIN_PRESENTATION: Record<string, { icon: string; badge: string }> = {
 };
 
 
-function CollectionCard({ collection, onSelect }: { collection: Collection; onSelect: (collection: Collection) => void }) {
+const CollectionCard = memo(function CollectionCard({ collection, onSelect }: { collection: Collection; onSelect: (collection: Collection) => void }) {
   const domain = collection.domain || "Other";
   const presentation = DOMAIN_PRESENTATION[domain] ?? DOMAIN_PRESENTATION.Other;
   const previews = collection.reels.slice(0, 3);
@@ -42,16 +44,9 @@ function CollectionCard({ collection, onSelect }: { collection: Collection; onSe
         style={{ gridTemplateColumns: `repeat(${visiblePreviews.length}, minmax(0, 1fr))` }}
       >
         {visiblePreviews.map((reel, index) => (
-          <img
+          <ThumbnailImage
             key={reel?.id ?? `fallback-${index}`}
             src={getReelThumbnailUrl(reel)}
-            alt=""
-            loading="lazy"
-            decoding="async"
-            onError={(event) => {
-              event.currentTarget.onerror = null;
-              event.currentTarget.src = "/logo.png";
-            }}
             className="h-full min-w-0 w-full rounded-[10px] object-cover"
           />
         ))}
@@ -86,7 +81,7 @@ function CollectionCard({ collection, onSelect }: { collection: Collection; onSe
       </div>
     </button>
   );
-}
+});
 
 
 export default function CollectionGallery({ collections, refreshing, onRefresh, onSelect }: CollectionGalleryProps) {

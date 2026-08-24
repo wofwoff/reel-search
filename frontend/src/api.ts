@@ -117,11 +117,6 @@ export async function fetchHealth(): Promise<Health> {
   return parseResponse<Health>(await fetch(`${API_BASE}/api/health`));
 }
 
-export async function fetchReels(): Promise<Reel[]> {
-  const headers = await getAuthHeaders();
-  return parseResponse<Reel[]>(await fetch(`${API_BASE}/api/reels`, { headers }));
-}
-
 export async function fetchLibraryCount(): Promise<LibraryCount> {
   const headers = await getAuthHeaders();
   return parseResponse<LibraryCount>(await fetch(`${API_BASE}/api/reels/count`, { headers }));

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, memo, useEffect, useMemo, useState } from "react";
 import {
   Collection,
   fetchCollectionReels,
@@ -18,19 +18,33 @@ import {
   getReelThumbnailUrl
 } from "./api";
 import CollectionGallery from "./CollectionGallery";
+import ThumbnailImage from "./ThumbnailImage";
 import { supabase } from "./supabaseClient";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 type SaveState = "idle" | "downloading" | "uploading" | "embedding" | "saved" | "failed";
 
+type ResourceObj = {
+  title: string;
+  url: string;
+};
+
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit"
+});
+
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit"
-  }).format(new Date(value));
+  return dateFormatter.format(new Date(value));
+}
+
+function incrementRecallHits(currentHits: number) {
+  const next = currentHits + 1;
+  localStorage.setItem("reel_search_recall_hits", String(next));
+  return next;
 }
 
 function getPlatformName(url: string | undefined, fallback: string = "Instagram") {
@@ -39,7 +53,7 @@ function getPlatformName(url: string | undefined, fallback: string = "Instagram"
   return fallback;
 }
 
-function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClick: () => void }) {
+const ReelCard = memo(function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClick: () => void }) {
   const title = reel.title || reel.caption || "Saved reel";
 
   return (
@@ -50,23 +64,9 @@ function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClic
       className="reel-card group flex h-full w-full min-w-0 cursor-pointer flex-col rounded-[16px] border border-outline-variant/70 bg-surface-container-lowest p-2.5 text-left shadow-sm transition-[border-color,box-shadow,transform] duration-200 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface sm:p-3"
     >
       <div className="reel-card__media relative mb-3 flex w-full aspect-video items-center justify-center overflow-hidden rounded-[12px] bg-surface-variant">
-        <img 
+        <ThumbnailImage
           className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-          src={getReelThumbnailUrl(reel)} 
-          alt=""
-          loading="lazy"
-          decoding="async"
-          onError={(e) => {
-            e.currentTarget.onerror = null;
-            e.currentTarget.style.display = 'none';
-            const parent = e.currentTarget.parentElement;
-            if (parent && !parent.querySelector('.fallback-icon')) {
-              const icon = document.createElement('span');
-              icon.className = 'material-symbols-outlined text-[36px] text-outline fallback-icon';
-              icon.innerText = 'video_library';
-              parent.appendChild(icon);
-            }
-          }}
+          src={getReelThumbnailUrl(reel)}
         />
         
         <div className="absolute inset-0 bg-black/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -110,46 +110,50 @@ function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClic
       </div>
     </button>
   );
-}
+});
 
-function ReelModal({ reel, onClose, onDeleteSuccess }: { reel: Reel; onClose: () => void; onDeleteSuccess: () => void }) {
+const ReelModal = memo(function ReelModal({ reel, onClose, onDeleteSuccess }: { reel: Reel; onClose: () => void; onDeleteSuccess: () => void }) {
   const title = reel.title || "Reel Details";
   const [deleting, setDeleting] = useState(false);
 
-  let actionableItems: string[] = [];
-  if (reel.actionable_items) {
-    try {
-      actionableItems = JSON.parse(reel.actionable_items);
-    } catch {
-      actionableItems = reel.actionable_items.split("\n").filter((i) => i.trim());
-    }
-  }
-
-  interface ResourceObj {
-    title: string;
-    url: string;
-  }
-  let resources: ResourceObj[] = [];
-  if (reel.resources) {
-    try {
-      resources = JSON.parse(reel.resources);
-    } catch {
-      // ignore
-    }
-  }
-
-  let gcsUris: string[] = [];
-  if (reel.gcs_uri) {
-    if (reel.gcs_uri.startsWith("[")) {
+  const { actionableItems, resources, gcsUris } = useMemo(() => {
+    let parsedActionableItems: string[] = [];
+    if (reel.actionable_items) {
       try {
-        gcsUris = JSON.parse(reel.gcs_uri);
+        parsedActionableItems = JSON.parse(reel.actionable_items);
       } catch {
-        gcsUris = [reel.gcs_uri];
+        parsedActionableItems = reel.actionable_items.split("\n").filter((i) => i.trim());
       }
-    } else {
-      gcsUris = [reel.gcs_uri];
     }
-  }
+
+    let parsedResources: ResourceObj[] = [];
+    if (reel.resources) {
+      try {
+        parsedResources = JSON.parse(reel.resources);
+      } catch {
+        // Ignore malformed resource data.
+      }
+    }
+
+    let parsedGcsUris: string[] = [];
+    if (reel.gcs_uri) {
+      if (reel.gcs_uri.startsWith("[")) {
+        try {
+          parsedGcsUris = JSON.parse(reel.gcs_uri);
+        } catch {
+          parsedGcsUris = [reel.gcs_uri];
+        }
+      } else {
+        parsedGcsUris = [reel.gcs_uri];
+      }
+    }
+
+    return {
+      actionableItems: parsedActionableItems,
+      resources: parsedResources,
+      gcsUris: parsedGcsUris
+    };
+  }, [reel]);
 
   async function handleDeleteClick() {
     if (!window.confirm("Are you sure you want to permanently delete this reel? This will remove it from GCS and your Database library.")) {
@@ -186,21 +190,9 @@ function ReelModal({ reel, onClose, onDeleteSuccess }: { reel: Reel; onClose: ()
         <div className="p-6 overflow-y-auto grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6 custom-scrollbar">
           <div className="flex flex-col gap-4">
             <div className="aspect-[9/12] rounded-lg overflow-hidden bg-surface-variant border border-outline-variant/30 flex items-center justify-center">
-              <img 
-                className="w-full h-full object-cover" 
-                src={getReelThumbnailUrl(reel)} 
-                alt="" 
-                onError={(e) => {
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.style.display = 'none';
-                  const parent = e.currentTarget.parentElement;
-                  if (parent && !parent.querySelector('.fallback-icon')) {
-                    const icon = document.createElement('span');
-                    icon.className = 'material-symbols-outlined text-[48px] text-outline fallback-icon';
-                    icon.innerText = 'video_library';
-                    parent.appendChild(icon);
-                  }
-                }}
+              <ThumbnailImage
+                className="w-full h-full object-cover"
+                src={getReelThumbnailUrl(reel)}
               />
             </div>
 
@@ -324,7 +316,7 @@ function ReelModal({ reel, onClose, onDeleteSuccess }: { reel: Reel; onClose: ()
       </div>
     </div>
   );
-}
+});
 
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -446,6 +438,8 @@ export default function App() {
     return "";
   }
 
+  const syncLink = showSyncModal ? buildSyncLink() : "";
+
   async function importSyncInput(value: string) {
     let token = value.trim();
     let accessToken = "";
@@ -526,23 +520,6 @@ export default function App() {
 
   useEffect(() => {
     fetchHealth().then(setHealth).catch(() => setHealth(null));
-  }, []);
-
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const userIdParam = urlParams.get("user_id");
-    const syncTokenParam = urlParams.get("sync_token");
-
-    if (importSyncIdentity(userIdParam, syncTokenParam)) {
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-
-    const syncIdentity = getStoredSyncIdentity();
-    if (syncIdentity.userId && syncIdentity.token) {
-      setUserId(syncIdentity.userId);
-      setIsAuthLoading(false);
-      refreshLibrary();
-    }
   }, []);
 
   useEffect(() => {
@@ -629,12 +606,13 @@ export default function App() {
     setError("");
     setSaveMessage("");
     setSaveState(url ? "downloading" : "uploading");
+    const embeddingTimeout = setTimeout(() => setSaveState("embedding"), 500);
     try {
       if (files.length > 0 && !url) {
         setSaveState("uploading");
       }
-      setTimeout(() => setSaveState("embedding"), 500);
       const response = await saveReel(url, files);
+      clearTimeout(embeddingTimeout);
       setSaveState("saved");
       setSaveMessage(response.duplicate ? "Reel is already in library!" : "Reel saved and analyzed.");
       setUrl("");
@@ -642,6 +620,7 @@ export default function App() {
       setShowUploadArea(false);
       await refreshLibrary();
     } catch (err) {
+      clearTimeout(embeddingTimeout);
       setSaveState("failed");
       setError(err instanceof Error ? err.message : "Save failed");
     }
@@ -662,11 +641,7 @@ export default function App() {
       // Increment recall hits if we found a relevant match (score >= 0.70)
       const hasHit = searchResults.some(r => r.score && r.score >= 0.70);
       if (hasHit) {
-        setRecallHits((prev) => {
-          const next = prev + 1;
-          localStorage.setItem("reel_search_recall_hits", String(next));
-          return next;
-        });
+        setRecallHits(incrementRecallHits);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
@@ -1065,11 +1040,7 @@ export default function App() {
                       score={reel.score} 
                       onClick={() => {
                         setSelectedReel(reel);
-                        setRecallHits((prev) => {
-                          const next = prev + 1;
-                          localStorage.setItem("reel_search_recall_hits", String(next));
-                          return next;
-                        });
+                        setRecallHits(incrementRecallHits);
                       }} 
                     />
                   ))}
@@ -1167,11 +1138,11 @@ export default function App() {
                   Scan this QR code with your iPhone camera to instantly open and sync this exact library in Safari.
                 </p>
                 
-                {buildSyncLink() ? (
+                {syncLink ? (
                   <div className="flex justify-center p-4 bg-white rounded-lg border border-outline-variant/30 w-fit mx-auto shadow-sm">
                     <img 
                       src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
-                        buildSyncLink()
+                        syncLink
                       )}`} 
                       alt="Sync QR Code"
                       className="w-[180px] h-[180px]"
@@ -1192,12 +1163,12 @@ export default function App() {
                 
                 <div className="flex items-center gap-2 bg-surface-container-high rounded px-3 py-2 font-mono text-xs">
                   <span className="truncate flex-grow">
-                    {buildSyncLink() || "Loading..."}
+                    {syncLink || "Loading..."}
                   </span>
-                  {buildSyncLink() && (
+                  {syncLink && (
                     <button 
                       onClick={() => {
-                        copyToClipboard(buildSyncLink(), setCopiedSyncLink);
+                        copyToClipboard(syncLink, setCopiedSyncLink);
                       }}
                       className="text-primary hover:text-primary/80 shrink-0"
                       type="button"
