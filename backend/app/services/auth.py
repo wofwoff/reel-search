@@ -9,6 +9,7 @@ from time import time
 from uuid import UUID
 
 settings = get_settings()
+_http_client = httpx.AsyncClient()
 SYNC_TOKEN_VERSION = "v1"
 
 
@@ -87,26 +88,25 @@ async def get_current_user_id(
         "apikey": settings.supabase_service_role_key or "",
     }
     
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(url, headers=headers)
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid or expired session token",
-                )
-            
-            user_data = response.json()
-            user_id = user_data.get("id")
-            if not user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication failed: User ID not found in token",
-                )
-            return user_id
-            
-        except httpx.RequestError as exc:
+    try:
+        response = await _http_client.get(url, headers=headers)
+        if response.status_code != 200:
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Auth service unreachable: {exc}",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired session token",
             )
+
+        user_data = response.json()
+        user_id = user_data.get("id")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication failed: User ID not found in token",
+            )
+        return user_id
+
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Auth service unreachable: {exc}",
+        )

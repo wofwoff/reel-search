@@ -3,8 +3,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from app.services.collections import CollectionDraft
 from app.config import Settings
@@ -41,7 +41,19 @@ def _reel_from_row(row: dict[str, Any]) -> ReelOut:
 
 REEL_SELECT = """
 select
-  r.*,
+  r.id,
+  r.source_url,
+  r.canonical_url,
+  r.title,
+  r.caption,
+  r.creator,
+  r.thumbnail_url,
+  r.ingest_status,
+  r.created_at,
+  r.gcs_uri,
+  r.summary,
+  r.actionable_items,
+  r.resources,
   c.id as collection_id,
   c.name as collection_name
 from reels r
@@ -53,15 +65,25 @@ left join reel_collections c on c.id = ci.collection_id
 class ReelRepository:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._pool = (
+            ConnectionPool(
+                conninfo=settings.database_url,
+                kwargs={
+                    "row_factory": dict_row,
+                    "prepare_threshold": None,
+                },
+                open=False,
+            )
+            if settings.database_url
+            else None
+        )
 
     def _connect(self):
-        if not self.settings.database_url:
+        if not self.settings.database_url or self._pool is None:
             raise DatabaseError("DATABASE_URL is not configured")
-        return psycopg.connect(
-            self.settings.database_url,
-            row_factory=dict_row,
-            prepare_threshold=None,
-        )
+        if self._pool.closed:
+            self._pool.open()
+        return self._pool.connection()
 
     def find_by_canonical_url(self, canonical_url: str | None, user_id: str) -> ReelOut | None:
         if not canonical_url:
@@ -87,6 +109,14 @@ class ReelRepository:
             cur.execute("delete from reels where id = %s and user_id = %s", (reel_id, user_id))
             conn.commit()
             return cur.rowcount > 0
+
+    def update_thumbnail_url(self, reel_id: UUID, thumbnail_url: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "update reels set thumbnail_url = %s where id = %s",
+                (thumbnail_url, reel_id),
+            )
+            conn.commit()
 
     def create_reel(
         self,
@@ -204,15 +234,16 @@ class ReelRepository:
                 if not collection:
                     continue
                 collection_id = collection["id"]
-                for reel_id in draft.reel_ids:
-                    conn.execute(
-                        """
-                        insert into reel_collection_items (collection_id, reel_id)
-                        values (%s, %s)
-                        on conflict (reel_id) do update set collection_id = excluded.collection_id
-                        """,
-                        (collection_id, reel_id),
-                    )
+                if draft.reel_ids:
+                    with conn.cursor() as cur:
+                        cur.executemany(
+                            """
+                            insert into reel_collection_items (collection_id, reel_id)
+                            values (%s, %s)
+                            on conflict (reel_id) do update set collection_id = excluded.collection_id
+                            """,
+                            [(collection_id, reel_id) for reel_id in draft.reel_ids],
+                        )
             conn.commit()
 
     def list_collections(self, user_id: str) -> list[CollectionOut]:

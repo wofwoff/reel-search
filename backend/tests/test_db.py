@@ -8,19 +8,30 @@ def test_vector_literal_formats_pgvector_input():
 
 def test_repository_disables_prepared_statements_for_transaction_pooler(monkeypatch):
     connection = object()
-    connect_args = {}
+    pool_args = {}
 
-    def fake_connect(database_url, **kwargs):
-        connect_args["database_url"] = database_url
-        connect_args.update(kwargs)
-        return connection
+    class FakePool:
+        def __init__(self, **kwargs):
+            pool_args.update(kwargs)
+            self.closed = True
+            self.open_calls = 0
 
-    monkeypatch.setattr("app.services.db.psycopg.connect", fake_connect)
+        def open(self):
+            self.closed = False
+            self.open_calls += 1
+
+        def connection(self):
+            return connection
+
+    monkeypatch.setattr("app.services.db.ConnectionPool", FakePool)
 
     repo = ReelRepository(Settings(DATABASE_URL="postgresql://example"))
 
+    assert repo._pool.open_calls == 0
     assert repo._connect() is connection
-    assert connect_args["prepare_threshold"] is None
+    assert repo._pool.open_calls == 1
+    assert pool_args["open"] is False
+    assert pool_args["kwargs"]["prepare_threshold"] is None
 
 
 def test_repository_search_query_execution():

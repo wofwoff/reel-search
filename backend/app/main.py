@@ -7,7 +7,7 @@ from uuid import UUID
 
 import logging
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Depends, BackgroundTasks
-from fastapi.responses import Response, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -25,6 +25,23 @@ from app.services.collections import build_collections
 settings = get_settings()
 
 app = FastAPI(title="Reel Search API", version="0.1.0")
+
+
+@app.exception_handler(DatabaseError)
+async def database_error_handler(request, exc: DatabaseError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(EmbeddingError)
+async def embedding_error_handler(request, exc: EmbeddingError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(StorageError)
+async def storage_error_handler(request, exc: StorageError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 allowed_origins = [origin.strip() for origin in settings.frontend_origin.split(",") if origin.strip()]
 allowed_origins.extend([
     "capacitor://localhost",
@@ -45,27 +62,20 @@ app.add_middleware(
 )
 
 
-def get_repository() -> ReelRepository:
-    return ReelRepository(settings)
-
-
-def get_embedder() -> VertexEmbeddingProvider:
-    return VertexEmbeddingProvider(settings)
-
-
-def get_storage() -> GcsStorage:
-    return GcsStorage(settings)
+repository = ReelRepository(settings)
+embedder = VertexEmbeddingProvider(settings)
+storage_client = GcsStorage(settings)
 
 
 def recluster_user_collections(
     repo: ReelRepository,
     user_id: str,
-    classifier: VertexEmbeddingProvider | None = None,
+    classifier: VertexEmbeddingProvider = embedder,
 ) -> None:
     reels = repo.list_collection_source_reels(user_id)
     semantic_groups = None
     try:
-        semantic_groups = (classifier or get_embedder()).classify_collections(reels)
+        semantic_groups = classifier.classify_collections(reels)
     except Exception:
         # Collection refresh is best effort and must never make saving fail.
         pass
@@ -94,31 +104,21 @@ def health() -> HealthResponse:
 
 @app.get("/api/reels", response_model=list[ReelOut])
 def list_reels(user_id: str = Depends(get_current_user_id)) -> list[ReelOut]:
-    try:
-        return get_repository().list_reels(user_id=user_id)
-    except DatabaseError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return repository.list_reels(user_id=user_id)
 
 
 @app.get("/api/reels/count", response_model=LibraryCountOut)
 def count_reels(user_id: str = Depends(get_current_user_id)) -> LibraryCountOut:
-    try:
-        return LibraryCountOut(count=get_repository().count_reels(user_id=user_id))
-    except DatabaseError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return LibraryCountOut(count=repository.count_reels(user_id=user_id))
 
 
 @app.get("/api/collections", response_model=list[CollectionOut])
 def list_collections(user_id: str = Depends(get_current_user_id)) -> list[CollectionOut]:
-    repo = get_repository()
-    try:
-        collections = repo.list_collections(user_id=user_id)
-        if not collections or any(collection.domain is None for collection in collections):
-            recluster_user_collections(repo, user_id)
-            collections = repo.list_collections(user_id=user_id)
-        return collections
-    except DatabaseError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    collections = repository.list_collections(user_id=user_id)
+    if not collections or any(collection.domain is None for collection in collections):
+        recluster_user_collections(repository, user_id)
+        collections = repository.list_collections(user_id=user_id)
+    return collections
 
 
 @app.get("/api/collections/{collection_id}/reels", response_model=list[ReelOut])
@@ -127,20 +127,13 @@ def list_collection_reels(
     limit: int = Query(default=8, ge=1, le=50),
     user_id: str = Depends(get_current_user_id),
 ) -> list[ReelOut]:
-    try:
-        return get_repository().list_collection_reels(collection_id, user_id, limit)
-    except DatabaseError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return repository.list_collection_reels(collection_id, user_id, limit)
 
 
 @app.post("/api/collections/recluster", response_model=list[CollectionOut])
 async def recluster_collections(user_id: str = Depends(get_current_user_id)) -> list[CollectionOut]:
-    repo = get_repository()
-    try:
-        await run_in_threadpool(recluster_user_collections, repo, user_id)
-        return await run_in_threadpool(repo.list_collections, user_id)
-    except DatabaseError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    await run_in_threadpool(recluster_user_collections, repository, user_id)
+    return await run_in_threadpool(repository.list_collections, user_id)
 
 
 @app.post("/api/sync-token", response_model=SyncTokenResponse)
@@ -169,12 +162,8 @@ async def save_reel(
     if url and not (is_instagram_url(url) or is_youtube_url(url)):
         raise HTTPException(status_code=400, detail="Only Instagram and YouTube URLs are supported")
 
-    repo = get_repository()
     if canonical_url:
-        try:
-            existing = await run_in_threadpool(repo.find_by_canonical_url, canonical_url, user_id)
-        except DatabaseError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        existing = await run_in_threadpool(repository.find_by_canonical_url, canonical_url, user_id)
         if existing:
             return SaveResponse(reel=existing, duplicate=True, ingest_source="url")
 
@@ -228,16 +217,16 @@ async def save_reel(
     try:
         # Upload all media files to GCS
         if len(local_paths) == 1:
-            gcs_uri, mime_type = await run_in_threadpool(get_storage().upload_video, local_paths[0])
+            gcs_uri, mime_type = await run_in_threadpool(storage_client.upload_video, local_paths[0])
         else:
-            gcs_uris = await run_in_threadpool(get_storage().upload_multiple_media, local_paths)
+            gcs_uris = await run_in_threadpool(storage_client.upload_multiple_media, local_paths)
             gcs_uri = json.dumps(gcs_uris)
             mime_type = guess_mime_type(local_paths[0])
 
         async def _fetch_summary():
             try:
                 return await run_in_threadpool(
-                    get_embedder().generate_summary,
+                    embedder.generate_summary,
                     gcs_uri,
                     mime_type,
                 )
@@ -246,7 +235,7 @@ async def save_reel(
 
         embedding, summary_data = await asyncio.gather(
             run_in_threadpool(
-                get_embedder().embed_video,
+                embedder.embed_video,
                 gcs_uri,
                 mime_type,
                 metadata["title"],
@@ -269,7 +258,7 @@ async def save_reel(
         try:
             thumb_file = await run_in_threadpool(generate_thumbnail, local_paths[0])
             if thumb_file and thumb_file.exists():
-                thumb_filename = await run_in_threadpool(get_storage().upload_thumbnail, thumb_file)
+                thumb_filename = await run_in_threadpool(storage_client.upload_thumbnail, thumb_file)
                 thumbnail_url_val = f"/api/thumbnails/{thumb_filename}"
                 if thumb_file != local_paths[0] and thumb_file.exists():
                     thumb_file.unlink(missing_ok=True)
@@ -278,7 +267,7 @@ async def save_reel(
 
         source_url = metadata["webpage_url"] or url or f"upload:{files[0].filename if files else local_paths[0].name}"
         reel = await run_in_threadpool(
-            repo.create_reel,
+            repository.create_reel,
             source_url=source_url,
             canonical_url=canonical_url,
             title=title_val,
@@ -294,21 +283,19 @@ async def save_reel(
             actionable_items=actionable_items_val,
             resources=resources_val,
         )
-        background_tasks.add_task(run_in_threadpool, recluster_user_collections, repo, user_id)
+        background_tasks.add_task(
+            run_in_threadpool, recluster_user_collections, repository, user_id
+        )
         return SaveResponse(reel=reel, duplicate=False, ingest_source=ingest_source)
-    except (DatabaseError, EmbeddingError, StorageError) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
     finally:
         if cleanup:
             cleanup()
-        elif ingest_source == "upload" and local_path and local_path.exists():
-            local_path.unlink(missing_ok=True)
 
 
 @app.get("/api/thumbnails/{filename}")
 async def get_thumbnail(filename: str):
     try:
-        blob_bytes = await run_in_threadpool(get_storage().download_blob, f"thumbnails/{filename}")
+        blob_bytes = await run_in_threadpool(storage_client.download_blob, f"thumbnails/{filename}")
         return Response(content=blob_bytes, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=31536000"})
     except StorageError as exc:
         raise HTTPException(status_code=404, detail="Thumbnail not found") from exc
@@ -316,8 +303,7 @@ async def get_thumbnail(filename: str):
 
 @app.get("/api/reels/{reel_id}/thumbnail")
 async def get_reel_thumbnail(reel_id: UUID, user_id: str = Depends(get_current_user_id)):
-    repo = get_repository()
-    reel = await run_in_threadpool(repo.find_by_id, reel_id, user_id)
+    reel = await run_in_threadpool(repository.find_by_id, reel_id, user_id)
     if not reel:
         raise HTTPException(status_code=404, detail="Reel not found")
 
@@ -335,14 +321,14 @@ async def get_reel_thumbnail(reel_id: UUID, user_id: str = Depends(get_current_u
             with TemporaryDirectory() as temp_dir:
                 ext = Path(target_gcs_uri).suffix or ".mp4"
                 temp_video = Path(temp_dir) / f"temp_vid{ext}"
-                await run_in_threadpool(get_storage().download_gcs_uri_to_file, target_gcs_uri, temp_video)
+                await run_in_threadpool(storage_client.download_gcs_uri_to_file, target_gcs_uri, temp_video)
                 thumb_file = await run_in_threadpool(generate_thumbnail, temp_video)
                 if thumb_file and thumb_file.exists():
-                    thumb_filename = await run_in_threadpool(get_storage().upload_thumbnail, thumb_file)
+                    thumb_filename = await run_in_threadpool(storage_client.upload_thumbnail, thumb_file)
                     new_thumb_url = f"/api/thumbnails/{thumb_filename}"
-                    with repo._connect() as conn:
-                        conn.execute("UPDATE reels SET thumbnail_url = %s WHERE id = %s", (new_thumb_url, reel.id))
-                        conn.commit()
+                    await run_in_threadpool(
+                        repository.update_thumbnail_url, reel.id, new_thumb_url
+                    )
                     return await get_thumbnail(thumb_filename)
         except Exception as exc:
             logging.exception("Failed to extract on-demand thumbnail for reel %s: %s", reel_id, exc)
@@ -371,11 +357,10 @@ async def search_reels(
     payload: SearchRequest,
     user_id: str = Depends(get_current_user_id),
 ) -> list[SearchResult]:
-    try:
-        embedding = await run_in_threadpool(get_embedder().embed_query, payload.query)
-        return await run_in_threadpool(get_repository().search, payload.query, embedding, payload.limit, user_id)
-    except (DatabaseError, EmbeddingError) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    embedding = await run_in_threadpool(embedder.embed_query, payload.query)
+    return await run_in_threadpool(
+        repository.search, payload.query, embedding, payload.limit, user_id
+    )
 
 
 @app.delete("/api/reels/{reel_id}")
@@ -384,24 +369,22 @@ async def delete_reel(
     background_tasks: BackgroundTasks,
     user_id: str = Depends(get_current_user_id),
 ):
-    repo = get_repository()
-    try:
-        reel = await run_in_threadpool(repo.find_by_id, reel_id, user_id)
-        if not reel:
-            raise HTTPException(status_code=404, detail="Reel not found")
+    reel = await run_in_threadpool(repository.find_by_id, reel_id, user_id)
+    if not reel:
+        raise HTTPException(status_code=404, detail="Reel not found")
 
-        success = await run_in_threadpool(repo.delete_reel, reel_id, user_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Reel not found")
+    success = await run_in_threadpool(repository.delete_reel, reel_id, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Reel not found")
 
-        background_tasks.add_task(run_in_threadpool, recluster_user_collections, repo, user_id)
+    background_tasks.add_task(
+        run_in_threadpool, recluster_user_collections, repository, user_id
+    )
 
-        if reel.gcs_uri:
-            try:
-                await run_in_threadpool(get_storage().delete_video, reel.gcs_uri)
-            except Exception:
-                pass
+    if reel.gcs_uri:
+        try:
+            await run_in_threadpool(storage_client.delete_video, reel.gcs_uri)
+        except Exception:
+            pass
 
-        return {"ok": True}
-    except DatabaseError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"ok": True}

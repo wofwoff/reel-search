@@ -1,6 +1,9 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from app.config import Settings
+from app.services.storage import guess_mime_type
 
 
 DOCUMENT_INSTRUCTION = (
@@ -50,31 +53,30 @@ class VertexEmbeddingProvider:
         return list(response.embeddings[0].values)
 
     def embed_video(self, gcs_uri: str, mime_type: str, title: str | None = None) -> list[float]:
-        import json
-        from pathlib import Path
-        from app.services.storage import guess_mime_type
-
         try:
             uris = json.loads(gcs_uri)
-            if isinstance(uris, list):
-                # Retrieve and average embeddings for all items in the carousel
-                embeddings = []
-                for uri in uris:
-                    mtype = guess_mime_type(Path(uri))
-                    emb = self.embed_single_media(uri, mtype, title)
-                    embeddings.append(emb)
-                if not embeddings:
-                    raise EmbeddingError("No embeddings generated for slides")
-                dim = len(embeddings[0])
-                avg_emb = [0.0] * dim
-                for emb in embeddings:
-                    for i in range(dim):
-                        avg_emb[i] += emb[i]
+        except json.JSONDecodeError:
+            uris = None
+
+        if isinstance(uris, list):
+            # Retrieve and average embeddings for all items in the carousel
+            def _embed_one(uri: str) -> list[float]:
+                mtype = guess_mime_type(Path(uri))
+                return self.embed_single_media(uri, mtype, title)
+
+            with ThreadPoolExecutor(max_workers=min(len(uris), 8) or 1) as pool:
+                embeddings = list(pool.map(_embed_one, uris))
+
+            if not embeddings:
+                raise EmbeddingError("No embeddings generated for slides")
+            dim = len(embeddings[0])
+            avg_emb = [0.0] * dim
+            for emb in embeddings:
                 for i in range(dim):
-                    avg_emb[i] /= len(embeddings)
-                return avg_emb
-        except Exception:
-            pass
+                    avg_emb[i] += emb[i]
+            for i in range(dim):
+                avg_emb[i] /= len(embeddings)
+            return avg_emb
 
         return self.embed_single_media(gcs_uri, mime_type, title)
 
@@ -126,8 +128,6 @@ class VertexEmbeddingProvider:
     def generate_summary(self, gcs_uri: str, mime_type: str) -> dict:
         from google.genai import types
         from pydantic import BaseModel
-        from pathlib import Path
-        from app.services.storage import guess_mime_type
 
         class Resource(BaseModel):
             title: str
@@ -140,7 +140,6 @@ class VertexEmbeddingProvider:
             resources: list[Resource]
 
         parts = []
-        import json
         try:
             uris = json.loads(gcs_uri)
             if isinstance(uris, list):
@@ -171,7 +170,6 @@ class VertexEmbeddingProvider:
                 response_schema=ReelAnalysis,
             ),
         )
-        import json
         try:
             return json.loads(response.text)
         except Exception:

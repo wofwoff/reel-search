@@ -95,7 +95,7 @@ def test_list_collections_returns_domain_and_caps_preview_reels_at_three():
 
 def test_count_endpoint_returns_repository_total(monkeypatch):
     fake_repo = type("FakeRepo", (), {"count_reels": lambda self, user_id: 79})()
-    monkeypatch.setattr(main, "get_repository", lambda: fake_repo)
+    monkeypatch.setattr(main, "repository", fake_repo)
     main.app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
 
     try:

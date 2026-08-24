@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,14 +29,22 @@ def guess_mime_type(path: Path) -> str:
 class GcsStorage:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = storage.Client(
+                project=self.settings.google_cloud_project or None
+            )
+        return self._client
 
     def upload_video(self, path: Path) -> tuple[str, str]:
         if not self.settings.reel_search_gcs_bucket:
             raise StorageError("REEL_SEARCH_GCS_BUCKET is not configured")
 
         content_type = guess_mime_type(path)
-        client = storage.Client(project=self.settings.google_cloud_project or None)
-        bucket = client.bucket(self.settings.reel_search_gcs_bucket)
+        bucket = self.client.bucket(self.settings.reel_search_gcs_bucket)
         object_name = f"reels/{uuid4()}{path.suffix or '.mp4'}"
         blob = bucket.blob(object_name)
         blob.upload_from_filename(str(path), content_type=content_type)
@@ -45,26 +54,26 @@ class GcsStorage:
         if not self.settings.reel_search_gcs_bucket:
             raise StorageError("REEL_SEARCH_GCS_BUCKET is not configured")
 
-        client = storage.Client(project=self.settings.google_cloud_project or None)
-        bucket = client.bucket(self.settings.reel_search_gcs_bucket)
+        bucket = self.client.bucket(self.settings.reel_search_gcs_bucket)
 
-        gcs_uris = []
         folder_uuid = uuid4()
-        for path in paths:
+
+        def _upload_one(path: Path) -> str:
             content_type = guess_mime_type(path)
             object_name = f"reels/{folder_uuid}/{path.name}"
             blob = bucket.blob(object_name)
             blob.upload_from_filename(str(path), content_type=content_type)
-            gcs_uris.append(f"gs://{bucket.name}/{object_name}")
-        return gcs_uris
+            return f"gs://{bucket.name}/{object_name}"
+
+        with ThreadPoolExecutor(max_workers=min(len(paths), 8) or 1) as pool:
+            return list(pool.map(_upload_one, paths))
 
     def upload_thumbnail(self, path: Path) -> str:
         if not self.settings.reel_search_gcs_bucket:
             raise StorageError("REEL_SEARCH_GCS_BUCKET is not configured")
 
         content_type = guess_mime_type(path)
-        client = storage.Client(project=self.settings.google_cloud_project or None)
-        bucket = client.bucket(self.settings.reel_search_gcs_bucket)
+        bucket = self.client.bucket(self.settings.reel_search_gcs_bucket)
         filename = f"{uuid4()}.jpg"
         object_name = f"thumbnails/{filename}"
         blob = bucket.blob(object_name)
@@ -74,8 +83,7 @@ class GcsStorage:
     def download_blob(self, object_name: str) -> bytes:
         if not self.settings.reel_search_gcs_bucket:
             raise StorageError("REEL_SEARCH_GCS_BUCKET is not configured")
-        client = storage.Client(project=self.settings.google_cloud_project or None)
-        bucket = client.bucket(self.settings.reel_search_gcs_bucket)
+        bucket = self.client.bucket(self.settings.reel_search_gcs_bucket)
         blob = bucket.blob(object_name)
         if not blob.exists():
             raise StorageError(f"Blob {object_name} not found")
@@ -88,8 +96,7 @@ class GcsStorage:
         if len(parts) < 2:
             raise StorageError(f"Invalid GCS URI: {gcs_uri}")
         bucket_name, object_name = parts
-        client = storage.Client(project=self.settings.google_cloud_project or None)
-        bucket = client.bucket(bucket_name)
+        bucket = self.client.bucket(bucket_name)
         blob = bucket.blob(object_name)
         blob.download_to_filename(str(target_path))
 
@@ -113,8 +120,7 @@ class GcsStorage:
             return
         bucket_name, object_name = parts
         try:
-            client = storage.Client(project=self.settings.google_cloud_project or None)
-            bucket = client.bucket(bucket_name)
+            bucket = self.client.bucket(bucket_name)
             blob = bucket.blob(object_name)
             blob.delete()
         except Exception:
