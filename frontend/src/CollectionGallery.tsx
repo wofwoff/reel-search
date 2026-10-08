@@ -84,6 +84,17 @@ const CollectionCard = memo(function CollectionCard({ collection, onSelect }: { 
 });
 
 
+// The API returns each collection's previews newest-first, so reels[0] is the latest reel added.
+// Array.prototype.sort is stable, so collections with the same timestamp keep the API order.
+function latestReelTime(collection: Collection): number {
+  return collection.reels.reduce((latest, reel) => Math.max(latest, Date.parse(reel.created_at) || 0), 0);
+}
+
+function sortByLatestReel(collections: Collection[]): Collection[] {
+  return [...collections].sort((a, b) => latestReelTime(b) - latestReelTime(a));
+}
+
+
 export default function CollectionGallery({ collections, refreshing, onRefresh, onSelect }: CollectionGalleryProps) {
   if (collections.length === 0) {
     return (
@@ -111,7 +122,7 @@ export default function CollectionGallery({ collections, refreshing, onRefresh, 
         </button>
       </div>
       <div className="collection-grid">
-        {collections.map((collection) => (
+        {sortByLatestReel(collections).map((collection) => (
           <CollectionCard key={collection.id} collection={collection} onSelect={onSelect} />
         ))}
       </div>
