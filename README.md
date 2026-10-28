@@ -14,7 +14,11 @@ A personal semantic search engine for Instagram reels. Paste a reel URL or uploa
 ## Setup
 
 1. Create a Supabase project and run the SQL in `supabase/migrations/202606290001_create_reels.sql`.
-2. Create a GCS bucket in the same GCP project you use for Vertex AI.
+2. Create a GCS bucket in the same GCP project you use for Vertex AI and apply the 1-day auto-delete lifecycle policy:
+
+```bash
+gcloud storage buckets update gs://your-bucket --lifecycle-file=gcs-lifecycle.json
+```
 3. Enable the Gemini Enterprise Agent Platform / Vertex AI API and authenticate locally:
 
 ```bash

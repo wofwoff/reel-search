@@ -1,9 +1,10 @@
 substitutions:
   _REGION: us-central1
   _REPO: cloud-run-source-deploy
-  _SERVICE_ACCOUNT: reel-search-run@reel-search-500906.iam.gserviceaccount.com
-  _API_URL: https://reel-search-api-771696730702.us-central1.run.app
-  _FRONTEND_URL: https://reel-search-frontend-771696730702.us-central1.run.app
+  _SERVICE_ACCOUNT: reel-search-run@reel-search-28734.iam.gserviceaccount.com
+  _API_URL: https://reel-search-api-403410843888.us-central1.run.app
+  _TASKS_QUEUE: reel-ingest
+  _FRONTEND_URL: https://reel-search-frontend-403410843888.us-central1.run.app
   _SUPABASE_URL: https://jxerusovqqvpkibygrem.supabase.co
   _SUPABASE_ANON_KEY: sb_publishable__jih2UywChZ9v3ZIiLwziw_xCBwR4af
 
@@ -63,7 +64,8 @@ steps:
       - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/reel-search-api:$SHORT_SHA
       - --region=${_REGION}
       - --service-account=${_SERVICE_ACCOUNT}
-      - --update-env-vars=FRONTEND_ORIGIN=${_FRONTEND_URL}
+      - --timeout=1500
+      - --update-env-vars=FRONTEND_ORIGIN=${_FRONTEND_URL},TASKS_QUEUE=${_TASKS_QUEUE},TASKS_LOCATION=${_REGION},TASKS_WORKER_URL=${_API_URL},TASKS_INVOKER_SERVICE_ACCOUNT=${_SERVICE_ACCOUNT}
     waitFor: ['push-api']
 
   - id: deploy-frontend
