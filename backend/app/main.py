@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 import json
@@ -6,17 +5,18 @@ from time import time
 from uuid import UUID
 
 import logging
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Depends, BackgroundTasks
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.schemas import CollectionOut, HealthResponse, LibraryCountOut, SaveResponse, SearchRequest, SearchResult, ReelOut, SyncTokenResponse
+from app.schemas import CollectionOut, HealthResponse, JobOut, LibraryCountOut, SaveResponse, SearchRequest, SearchResult, ReelOut, SyncTokenResponse
 from app.services.auth import create_sync_token, get_current_user_id, is_valid_sync_token
 from app.services.db import DatabaseError, ReelRepository
 from app.services.embedder import EmbeddingError, VertexEmbeddingProvider
-from app.services.downloader import MediaDownloadError, download_media
+from app.services.ingest import run_ingest_job, run_ingest_job_with_retries
+from app.services.task_queue import CloudTasksQueue, verify_worker_request
 from app.services.storage import GcsStorage, StorageError, guess_mime_type
 from app.services.thumbnail import generate_thumbnail
 from app.services.url_utils import canonicalize_url, is_instagram_url, is_youtube_url
@@ -65,6 +65,7 @@ app.add_middleware(
 repository = ReelRepository(settings)
 embedder = VertexEmbeddingProvider(settings)
 storage_client = GcsStorage(settings)
+task_queue = CloudTasksQueue(settings)
 
 
 def recluster_user_collections(
@@ -148,8 +149,31 @@ def issue_sync_token(user_id: str = Depends(get_current_user_id)) -> SyncTokenRe
     )
 
 
-@app.post("/api/reels", response_model=SaveResponse)
+def job_out(job: dict, user_id: str) -> JobOut:
+    reel = repository.find_by_id(job["reel_id"], user_id) if job.get("reel_id") else None
+    return JobOut(
+        id=job["id"],
+        status=job["status"],
+        error=job.get("error"),
+        reel=reel,
+        created_at=job["created_at"],
+    )
+
+
+def run_ingest_inline(job_id: UUID) -> None:
+    run_ingest_job_with_retries(
+        job_id,
+        repository=repository,
+        embedder=embedder,
+        storage=storage_client,
+        settings=settings,
+        after_save=recluster_user_collections,
+    )
+
+
+@app.post("/api/reels", response_model=SaveResponse, status_code=202)
 async def save_reel(
+    response: Response,
     background_tasks: BackgroundTasks,
     url: str | None = Form(default=None),
     files: list[UploadFile] = File(default=[]),
@@ -165,131 +189,75 @@ async def save_reel(
     if canonical_url:
         existing = await run_in_threadpool(repository.find_by_canonical_url, canonical_url, user_id)
         if existing:
+            response.status_code = 200
             return SaveResponse(reel=existing, duplicate=True, ingest_source="url")
 
-    local_paths: list[Path] = []
-    cleanup = None
-    metadata = {
-        "title": None,
-        "caption": None,
-        "creator": None,
-        "thumbnail_url": None,
-        "webpage_url": None,
-    }
-    ingest_source = "url"
+    # Stage uploads in GCS now: the request body is gone by the time a worker runs.
+    staged: list[str] = []
+    if files:
+        with TemporaryDirectory() as temp_dir:
+            local_paths: list[Path] = []
+            for idx, f in enumerate(files):
+                suffix = Path(f.filename or "file.mp4").suffix or ".mp4"
+                local_path = Path(temp_dir) / f"upload_{idx}{suffix}"
+                with open(local_path, "wb") as buffer:
+                    buffer.write(await f.read())
+                local_paths.append(local_path)
+            if len(local_paths) == 1:
+                uri, _ = await run_in_threadpool(storage_client.upload_video, local_paths[0])
+                staged = [uri]
+            else:
+                staged = await run_in_threadpool(storage_client.upload_multiple_media, local_paths)
 
-    if url:
-          try:
-              downloaded = await run_in_threadpool(download_media, url)
-              local_paths = downloaded.paths
-              cleanup = downloaded.cleanup
-              metadata.update(
-                  {
-                      "title": downloaded.title,
-                      "caption": downloaded.caption,
-                      "creator": downloaded.creator,
-                      "thumbnail_url": downloaded.thumbnail_url,
-                      "webpage_url": downloaded.webpage_url,
-                  }
-              )
-          except MediaDownloadError as exc:
-              if not files:
-                  raise HTTPException(
-                      status_code=422,
-                      detail=f"Media download failed: {exc}. Upload the media file to use the fallback path.",
-                  )
+    job = await run_in_threadpool(
+        repository.create_job,
+        user_id=user_id,
+        source_url=url,
+        canonical_url=canonical_url,
+        staged_gcs_uris=staged,
+        upload_title=files[0].filename if files else None,
+    )
 
-    if not local_paths and files:
-        ingest_source = "upload"
-        temp_dir = TemporaryDirectory()
-        for idx, f in enumerate(files):
-            suffix = Path(f.filename or "file.mp4").suffix or ".mp4"
-            local_path = Path(temp_dir.name) / f"upload_{idx}{suffix}"
-            with open(local_path, "wb") as buffer:
-                buffer.write(await f.read())
-            local_paths.append(local_path)
-        metadata["title"] = files[0].filename
-        cleanup = temp_dir.cleanup
-
-    if not local_paths:
-        raise HTTPException(status_code=400, detail="No media files were available to embed")
-
-    try:
-        # Upload all media files to GCS
-        if len(local_paths) == 1:
-            gcs_uri, mime_type = await run_in_threadpool(storage_client.upload_video, local_paths[0])
-        else:
-            gcs_uris = await run_in_threadpool(storage_client.upload_multiple_media, local_paths)
-            gcs_uri = json.dumps(gcs_uris)
-            mime_type = guess_mime_type(local_paths[0])
-
-        async def _fetch_summary():
+    if job["status"] == "queued" and job["attempts"] == 0:
+        if settings.uses_cloud_tasks:
             try:
-                return await run_in_threadpool(
-                    embedder.generate_summary,
-                    gcs_uri,
-                    mime_type,
-                )
-            except Exception:
-                return None
+                await run_in_threadpool(task_queue.enqueue, str(job["id"]))
+            except Exception as exc:
+                logging.exception("Failed to enqueue ingest job %s", job["id"])
+                await run_in_threadpool(repository.fail_job, job["id"], "Could not queue the job")
+                raise HTTPException(status_code=503, detail="Could not queue the reel for processing") from exc
+        else:
+            background_tasks.add_task(run_in_threadpool, run_ingest_inline, job["id"])
 
-        embedding, summary_data = await asyncio.gather(
-            run_in_threadpool(
-                embedder.embed_video,
-                gcs_uri,
-                mime_type,
-                metadata["title"],
-            ),
-            _fetch_summary(),
-        )
+    return SaveResponse(
+        job=await run_in_threadpool(job_out, job, user_id),
+        duplicate=False,
+        ingest_source="url" if url else "upload",
+    )
 
-        title_val = metadata["title"]
-        summary_val = None
-        actionable_items_val = None
-        resources_val = None
-        if summary_data and isinstance(summary_data, dict):
-            title_val = summary_data.get("title") or metadata["title"]
-            summary_val = summary_data.get("summary")
-            actionable_items_val = json.dumps(summary_data.get("actionable_items", [])) if "actionable_items" in summary_data else None
-            resources_val = json.dumps(summary_data.get("resources", [])) if "resources" in summary_data else None
 
-        # Attempt to generate and upload a thumbnail from local_paths[0]
-        thumbnail_url_val = metadata.get("thumbnail_url")
-        try:
-            thumb_file = await run_in_threadpool(generate_thumbnail, local_paths[0])
-            if thumb_file and thumb_file.exists():
-                thumb_filename = await run_in_threadpool(storage_client.upload_thumbnail, thumb_file)
-                thumbnail_url_val = f"/api/thumbnails/{thumb_filename}"
-                if thumb_file != local_paths[0] and thumb_file.exists():
-                    thumb_file.unlink(missing_ok=True)
-        except Exception as exc:
-            logging.warning("Failed to generate/upload thumbnail during save: %s", exc)
+@app.get("/api/jobs/{job_id}", response_model=JobOut)
+async def get_job(job_id: UUID, user_id: str = Depends(get_current_user_id)) -> JobOut:
+    job = await run_in_threadpool(repository.get_job, job_id, user_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return await run_in_threadpool(job_out, job, user_id)
 
-        source_url = metadata["webpage_url"] or url or f"upload:{files[0].filename if files else local_paths[0].name}"
-        reel = await run_in_threadpool(
-            repository.create_reel,
-            source_url=source_url,
-            canonical_url=canonical_url,
-            title=title_val,
-            caption=metadata["caption"],
-            creator=metadata["creator"],
-            thumbnail_url=thumbnail_url_val,
-            embedding=embedding,
-            embedding_model=settings.embedding_model,
-            user_id=user_id,
-            ingest_status="saved",
-            gcs_uri=gcs_uri,
-            summary=summary_val,
-            actionable_items=actionable_items_val,
-            resources=resources_val,
-        )
-        background_tasks.add_task(
-            run_in_threadpool, recluster_user_collections, repository, user_id
-        )
-        return SaveResponse(reel=reel, duplicate=False, ingest_source=ingest_source)
-    finally:
-        if cleanup:
-            cleanup()
+
+@app.post("/internal/ingest/{job_id}")
+async def ingest_worker(job_id: UUID, authorization: str | None = Header(default=None)):
+    """Cloud Tasks target. A non-2xx response makes Cloud Tasks retry with backoff."""
+    verify_worker_request(authorization, settings)
+    outcome = await run_in_threadpool(
+        run_ingest_job,
+        job_id,
+        repository=repository,
+        embedder=embedder,
+        storage=storage_client,
+        settings=settings,
+        after_save=recluster_user_collections,
+    )
+    return {"job_id": str(job_id), "outcome": outcome}
 
 
 @app.get("/api/thumbnails/{filename}")
@@ -336,8 +304,9 @@ async def get_reel_thumbnail(reel_id: UUID, user_id: str = Depends(get_current_u
     raise HTTPException(status_code=404, detail="Thumbnail unavailable")
 
 
-@app.post("/api/reels/shortcut", response_model=SaveResponse)
+@app.post("/api/reels/shortcut", response_model=SaveResponse, status_code=202)
 async def save_reel_shortcut(
+    response: Response,
     background_tasks: BackgroundTasks,
     url: str = Form(...),
     token: str = Form(...),
@@ -349,7 +318,7 @@ async def save_reel_shortcut(
     
     if not (is_global_valid or is_sync_valid):
         raise HTTPException(status_code=401, detail="Invalid shortcut token")
-    return await save_reel(background_tasks=background_tasks, url=url, files=[], user_id=user_id)
+    return await save_reel(response=response, background_tasks=background_tasks, url=url, files=[], user_id=user_id)
 
 
 @app.post("/api/search", response_model=list[SearchResult])

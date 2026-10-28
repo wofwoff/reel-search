@@ -111,7 +111,7 @@ def test_save_shortcut_valid_sync_token(client):
                 "user_id": TEST_USER_ID
             }
         )
-        assert response.status_code in (200, 422, 503)
+        assert response.status_code in (200, 202, 422, 503)
         if response.status_code == 401:
             assert response.json()["detail"] != "Invalid shortcut token"
     finally:

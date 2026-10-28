@@ -29,6 +29,23 @@ export type Reel = {
   collection_name?: string | null;
 };
 
+export type JobStatus = "queued" | "processing" | "succeeded" | "failed";
+
+export type IngestJob = {
+  id: string;
+  status: JobStatus;
+  error?: string | null;
+  reel?: Reel | null;
+  created_at: string;
+};
+
+export type SaveResult = {
+  reel?: Reel | null;
+  job?: IngestJob | null;
+  duplicate: boolean;
+  ingest_source: "url" | "upload";
+};
+
 export type SearchResult = Reel & {
   score: number;
 };
@@ -165,7 +182,7 @@ export async function reclusterCollections(): Promise<Collection[]> {
   }));
 }
 
-export async function saveReel(url: string, files?: File[] | File | null): Promise<{ reel: Reel; duplicate: boolean; ingest_source: "url" | "upload" }> {
+export async function saveReel(url: string, files?: File[] | File | null): Promise<SaveResult> {
   const form = new FormData();
   if (url.trim()) {
     form.append("url", url.trim());
@@ -185,6 +202,26 @@ export async function saveReel(url: string, files?: File[] | File | null): Promi
     headers,
     body: form
   }));
+}
+
+export async function fetchJob(jobId: string): Promise<IngestJob> {
+  const headers = await getAuthHeaders();
+  return parseResponse<IngestJob>(await fetch(`${API_BASE}/api/jobs/${encodeURIComponent(jobId)}`, { headers }));
+}
+
+/** Polls an ingest job until it succeeds, resolving to the saved reel; rejects if it fails or times out. */
+export async function waitForJob(
+  jobId: string,
+  { intervalMs = 2000, timeoutMs = 10 * 60 * 1000 }: { intervalMs?: number; timeoutMs?: number } = {}
+): Promise<Reel> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const job = await fetchJob(jobId);
+    if (job.status === "succeeded" && job.reel) return job.reel;
+    if (job.status === "failed") throw new Error(job.error || "Processing failed");
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("Still processing. The reel will appear in your library when it finishes.");
 }
 
 export async function searchReels(query: string, limit = 10): Promise<SearchResult[]> {

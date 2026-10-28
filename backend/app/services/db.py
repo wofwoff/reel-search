@@ -1,3 +1,4 @@
+import json
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
@@ -184,6 +185,92 @@ class ReelRepository:
         if not row:
             raise DatabaseError("Insert did not return a reel")
         return _reel_from_row(row)
+
+    def create_job(
+        self,
+        *,
+        user_id: str,
+        source_url: str | None,
+        canonical_url: str | None,
+        staged_gcs_uris: list[str],
+        upload_title: str | None,
+    ) -> dict[str, Any]:
+        """Insert a queued job, or return the in-flight one for the same URL."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                insert into ingest_jobs (user_id, source_url, canonical_url, staged_gcs_uris, upload_title)
+                values (%s, %s, %s, %s::jsonb, %s)
+                on conflict (user_id, canonical_url)
+                  where canonical_url is not null and status in ('queued', 'processing')
+                do nothing
+                returning *
+                """,
+                (user_id, source_url, canonical_url, json.dumps(staged_gcs_uris), upload_title),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    select * from ingest_jobs
+                    where user_id = %s and canonical_url = %s and status in ('queued', 'processing')
+                    limit 1
+                    """,
+                    (user_id, canonical_url),
+                ).fetchone()
+            conn.commit()
+        if not row:
+            raise DatabaseError("Could not create ingest job")
+        return row
+
+    def get_job(self, job_id: UUID, user_id: str | None = None) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            if user_id is None:
+                return conn.execute("select * from ingest_jobs where id = %s", (job_id,)).fetchone()
+            return conn.execute(
+                "select * from ingest_jobs where id = %s and user_id = %s", (job_id, user_id)
+            ).fetchone()
+
+    def claim_job(self, job_id: UUID, lease_seconds: int = 1800) -> dict[str, Any] | None:
+        # Must outlast the Cloud Tasks dispatch deadline (1500s) so a slow first run isn't re-claimed.
+        """Move a job to processing. Returns None if it is done or another worker holds the lease."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update ingest_jobs
+                set status = 'processing', attempts = attempts + 1, updated_at = now()
+                where id = %s
+                  and (status = 'queued'
+                       or (status = 'processing' and updated_at < now() - make_interval(secs => %s)))
+                returning *
+                """,
+                (job_id, lease_seconds),
+            ).fetchone()
+            conn.commit()
+        return row
+
+    def complete_job(self, job_id: UUID, reel_id: UUID) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "update ingest_jobs set status = 'succeeded', reel_id = %s, error = null, updated_at = now() where id = %s",
+                (reel_id, job_id),
+            )
+            conn.commit()
+
+    def fail_job(self, job_id: UUID, error: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "update ingest_jobs set status = 'failed', error = %s, updated_at = now() where id = %s",
+                (error[:1000], job_id),
+            )
+            conn.commit()
+
+    def requeue_job(self, job_id: UUID, error: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "update ingest_jobs set status = 'queued', error = %s, updated_at = now() where id = %s",
+                (error[:1000], job_id),
+            )
+            conn.commit()
 
     def list_reels(self, user_id: str, limit: int = 50) -> list[ReelOut]:
         with self._connect() as conn:

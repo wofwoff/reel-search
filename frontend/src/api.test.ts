@@ -8,7 +8,7 @@ vi.mock("./supabaseClient", () => ({
   }
 }));
 
-import { fetchCollectionReels, fetchLibraryCount, fetchLibraryOverview } from "./api";
+import { fetchCollectionReels, fetchLibraryCount, fetchLibraryOverview, waitForJob } from "./api";
 
 const fetchMock = vi.fn();
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -59,5 +59,34 @@ describe("library overview API", () => {
       count: 79,
       collections: null
     });
+  });
+});
+
+describe("ingest job polling", () => {
+  const jobResponse = (body: object) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  it("polls until the job succeeds and returns the saved reel", async () => {
+    const reel = { id: "r1", source_url: "u", ingest_status: "saved", created_at: "now" };
+    fetchMock
+      .mockResolvedValueOnce(jobResponse({ id: "j1", status: "queued" }))
+      .mockResolvedValueOnce(jobResponse({ id: "j1", status: "processing" }))
+      .mockResolvedValueOnce(jobResponse({ id: "j1", status: "succeeded", reel }));
+
+    await expect(waitForJob("j1", { intervalMs: 1 })).resolves.toEqual(reel);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenLastCalledWith(`${apiBase}/api/jobs/j1`, { headers: {} });
+  });
+
+  it("rejects with the worker's error when the job fails", async () => {
+    fetchMock.mockResolvedValueOnce(jobResponse({ id: "j1", status: "failed", error: "Media download failed" }));
+
+    await expect(waitForJob("j1", { intervalMs: 1 })).rejects.toThrow("Media download failed");
+  });
+
+  it("stops polling after the timeout", async () => {
+    fetchMock.mockImplementation(async () => jobResponse({ id: "j1", status: "processing" }));
+
+    await expect(waitForJob("j1", { intervalMs: 1, timeoutMs: 20 })).rejects.toThrow("Still processing");
   });
 });
