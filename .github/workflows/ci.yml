@@ -37,5 +37,9 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run test
+        env:
+          # Placeholder values: tests only need the Supabase client to construct, never to connect.
+          VITE_SUPABASE_URL: http://localhost:54321
+          VITE_SUPABASE_ANON_KEY: ci-placeholder
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
