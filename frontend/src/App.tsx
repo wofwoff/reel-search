@@ -11,6 +11,7 @@ import {
   createSyncToken,
   reclusterCollections,
   saveReel,
+  waitForJob,
   searchReels,
   SearchResult,
   deleteReel,
@@ -612,6 +613,10 @@ export default function App() {
         setSaveState("uploading");
       }
       const response = await saveReel(url, files);
+      if (response.job) {
+        setSaveState("embedding");
+        await waitForJob(response.job.id);
+      }
       clearTimeout(embeddingTimeout);
       setSaveState("saved");
       setSaveMessage(response.duplicate ? "Reel is already in library!" : "Reel saved and analyzed.");

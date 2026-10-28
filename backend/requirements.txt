@@ -8,3 +8,4 @@ google-genai>=1.0,<2
 google-cloud-storage>=2.19,<3
 yt-dlp>=2025.1.15
 httpx>=0.28,<1
+google-cloud-tasks>=2.16,<3

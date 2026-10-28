@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     yt_dlp_cookies_from_browser: str = Field(default="", alias="YT_DLP_COOKIES_FROM_BROWSER")
     yt_dlp_cookie_file: str = Field(default="", alias="YT_DLP_COOKIE_FILE")
     shortcut_token: str = Field(default="", alias="SHORTCUT_TOKEN")
+    # Cloud Tasks queue for ingestion. Leave tasks_queue empty to run jobs in-process (local dev).
+    tasks_queue: str = Field(default="", alias="TASKS_QUEUE")
+    tasks_location: str = Field(default="us-central1", alias="TASKS_LOCATION")
+    tasks_worker_url: str = Field(default="", alias="TASKS_WORKER_URL")
+    tasks_invoker_service_account: str = Field(default="", alias="TASKS_INVOKER_SERVICE_ACCOUNT")
+    ingest_max_attempts: int = Field(default=3, alias="INGEST_MAX_ATTEMPTS")
     video_fps: float = 1.0
     video_end_offset_seconds: int = 80
 
@@ -34,6 +40,15 @@ class Settings(BaseSettings):
     @property
     def has_gcs(self) -> bool:
         return bool(self.reel_search_gcs_bucket)
+
+    @property
+    def uses_cloud_tasks(self) -> bool:
+        return bool(
+            self.tasks_queue
+            and self.tasks_worker_url
+            and self.google_cloud_project
+            and self.tasks_invoker_service_account
+        )
 
 
 @lru_cache

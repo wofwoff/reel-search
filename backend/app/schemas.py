@@ -40,8 +40,18 @@ class SearchResult(ReelOut):
     score: float
 
 
+class JobOut(BaseModel):
+    id: UUID
+    status: Literal["queued", "processing", "succeeded", "failed"]
+    error: str | None = None
+    reel: ReelOut | None = None
+    created_at: datetime
+
+
 class SaveResponse(BaseModel):
-    reel: ReelOut
+    # Set when the reel already exists; otherwise `job` tracks the queued ingest.
+    reel: ReelOut | None = None
+    job: JobOut | None = None
     duplicate: bool = False
     ingest_source: Literal["url", "upload"]
 
