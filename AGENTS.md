@@ -45,7 +45,7 @@ Two independently deployed services, no shared code or monorepo tooling:
 
 ## Deployment
 
-Both services run on Cloud Run in project `reel-search-500906`, region `us-central1` (chosen to match the GCS bucket and Vertex AI location, both `us`):
+Both services run on Cloud Run in project `reel-search-28734`, region `us-central1` (chosen to match the GCS bucket and Vertex AI location, both `us`):
 - `reel-search-api` — backend, secrets (`DATABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, the Instagram cookie file) injected from Secret Manager, runs as the dedicated `reel-search-run` service account (scoped to the one GCS bucket + `aiplatform.user`, not the broad default compute SA).
 - `reel-search-frontend` — nginx serving the Vite build; `VITE_API_BASE_URL`/`VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` are baked in at build time (see `cloudbuild.yaml` substitutions), not runtime-configurable.
 

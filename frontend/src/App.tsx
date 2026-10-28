@@ -370,7 +370,7 @@ export default function App() {
     return "Analyze";
   }, [saveState]);
 
-  const shortcutEndpoint = "https://reel-search-api-771696730702.us-central1.run.app/api/reels/shortcut";
+  const shortcutEndpoint = "https://reel-search-api-403410843888.us-central1.run.app/api/reels/shortcut";
 
   function copyToClipboard(text: string, setCopied: (v: boolean) => void) {
     navigator.clipboard.writeText(text);
@@ -426,9 +426,9 @@ export default function App() {
     const syncIdentity = getStoredSyncIdentity();
     let base = window.location.origin;
     if (base.startsWith("capacitor://") || base.includes("localhost")) {
-      base = "https://reel-search-frontend-771696730702.us-central1.run.app";
+      base = "https://reel-search-frontend-403410843888.us-central1.run.app";
     }
-    const path = base === "https://reel-search-frontend-771696730702.us-central1.run.app" ? "/" : window.location.pathname;
+    const path = base === "https://reel-search-frontend-403410843888.us-central1.run.app" ? "/" : window.location.pathname;
 
     if (syncIdentity.userId && syncIdentity.token) {
       return `${base}${path}?user_id=${encodeURIComponent(syncIdentity.userId)}&sync_token=${encodeURIComponent(syncIdentity.token)}`;

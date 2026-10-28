@@ -45,7 +45,7 @@ Two independently deployed services, no shared code or monorepo tooling:
 
 ## Deployment
 
-Both services run on Cloud Run in project `reel-search-500906`, region `us-central1` (chosen to match the GCS bucket and Vertex AI location, both `us`):
+Both services run on Cloud Run in project `reel-search-28734`, region `us-central1` (chosen to match the GCS bucket and Vertex AI location, both `us`):
 - `reel-search-api` — backend, secrets (`DATABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, the Instagram cookie file) injected from Secret Manager, runs as the dedicated `reel-search-run` service account (scoped to the one GCS bucket + `aiplatform.user`, not the broad default compute SA).
 - `reel-search-frontend` — nginx serving the Vite build; `VITE_API_BASE_URL`/`VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` are baked in at build time (see `cloudbuild.yaml` substitutions), not runtime-configurable.
 
@@ -53,7 +53,7 @@ CI/CD: [cloudbuild.yaml](cloudbuild.yaml) builds and deploys both services on ev
 
 The connection/trigger were found deleted (or never actually created) on 2026-07-01 despite being documented here — `git push origin master` was silently a no-op for deploys for an unknown period. If deploys stop happening on push, check `gcloud builds triggers list --region=us-central1` first before assuming the app is just broken.
 
-`FRONTEND_ORIGIN` (set on `reel-search-api`) must exactly match the origin the browser actually loads the frontend from — Cloud Run services have two equivalent URLs (the human-readable `https://reel-search-frontend-771696730702.us-central1.run.app` and a hash-based `https://reel-search-frontend-<hash>-uc.a.run.app`), and they are different CORS origins even though they route to the same service. `_FRONTEND_URL` in `cloudbuild.yaml` is correct (project-number form); if this ever drifts (e.g. from a manual `gcloud run deploy`/`services update` using the wrong URL), every browser fetch from the real site fails with a CORS error while `curl`/health checks still look fine — this is exactly what caused a multi-hour "why can't I see my reels" debugging session on 2026-07-01.
+`FRONTEND_ORIGIN` (set on `reel-search-api`) must exactly match the origin the browser actually loads the frontend from — Cloud Run services have two equivalent URLs (the human-readable `https://reel-search-frontend-403410843888.us-central1.run.app` and a hash-based `https://reel-search-frontend-<hash>-uc.a.run.app`), and they are different CORS origins even though they route to the same service. `_FRONTEND_URL` in `cloudbuild.yaml` is correct (project-number form); if this ever drifts (e.g. from a manual `gcloud run deploy`/`services update` using the wrong URL), every browser fetch from the real site fails with a CORS error while `curl`/health checks still look fine — this is exactly what caused a multi-hour "why can't I see my reels" debugging session on 2026-07-01.
 
 Both Cloud Run services are set to track `LATEST` traffic (`gcloud run services update-traffic <service> --to-latest`), so every new revision auto-promotes to 100% traffic. If you ever run `gcloud run services update-traffic --to-revisions=<name>=100` to pin traffic to a specific revision (e.g. for a manual rollback), the service **stops auto-promoting** — every subsequent deploy (including CI ones) creates a new revision at 0% traffic until you explicitly run `--to-latest` again. This bit multiple deploys in a row on 2026-07-01 before being caught.
 

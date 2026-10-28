@@ -11,7 +11,7 @@ describe("iOS production build configuration", () => {
     expect(packageJson.scripts["cap:build"]).toContain("build:ios");
     expect(packageJson.scripts["build:ios"]).toContain("--mode ios");
     expect(iosEnv).toContain(
-      "VITE_API_BASE_URL=https://reel-search-api-771696730702.us-central1.run.app"
+      "VITE_API_BASE_URL=https://reel-search-api-403410843888.us-central1.run.app"
     );
     expect(iosEnv).toContain(
       "VITE_SUPABASE_URL=https://jxerusovqqvpkibygrem.supabase.co"
