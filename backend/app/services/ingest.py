@@ -17,6 +17,14 @@ from app.services.thumbnail import generate_thumbnail
 logger = logging.getLogger(__name__)
 
 
+GENERIC_ERROR = "Processing failed. Please try again."
+
+
+def _public_error(exc: Exception) -> str:
+    """Job errors are shown to users; keep internals (URIs, SQL, Vertex details) in server logs only."""
+    return str(exc) if isinstance(exc, MediaDownloadError) else GENERIC_ERROR
+
+
 def _delete_quietly(storage: GcsStorage, gcs_uri: str) -> None:
     try:
         storage.delete_video(gcs_uri)
@@ -185,9 +193,9 @@ def run_ingest_job(
     except Exception as exc:
         logger.exception("Ingest job %s failed (attempt %s)", job_id, job["attempts"])
         if job["attempts"] >= settings.ingest_max_attempts:
-            repository.fail_job(job_id, str(exc) or exc.__class__.__name__)
+            repository.fail_job(job_id, _public_error(exc))
             return "failed"
-        repository.requeue_job(job_id, str(exc) or exc.__class__.__name__)
+        repository.requeue_job(job_id, _public_error(exc))
         raise
 
     repository.complete_job(job_id, reel_id)

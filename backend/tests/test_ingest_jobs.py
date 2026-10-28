@@ -117,13 +117,13 @@ def test_transient_failure_requeues_and_reraises_so_cloud_tasks_retries():
     repo = FakeRepo(make_job())
     with pytest.raises(RuntimeError, match="vertex down"):
         run(repo, embedder=FakeEmbedder(fail=True))
-    assert repo.events == [("requeue", "vertex down")]
+    assert repo.events == [("requeue", ingest.GENERIC_ERROR)]  # internal detail stays out of the stored error
 
 
 def test_final_attempt_marks_job_failed_without_raising():
     repo = FakeRepo(make_job(attempts=2))  # claim bumps this to 3 == max
     assert run(repo, embedder=FakeEmbedder(fail=True), settings=Settings(INGEST_MAX_ATTEMPTS=3)) == "failed"
-    assert repo.events == [("fail", "vertex down")]
+    assert repo.events == [("fail", ingest.GENERIC_ERROR)]
 
 
 def test_failed_url_download_without_staged_fallback_is_an_error(monkeypatch):
