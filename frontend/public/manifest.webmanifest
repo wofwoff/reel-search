@@ -1,9 +1,11 @@
 {
-  "name": "Reel Search",
-  "short_name": "Reel Search",
+  "name": "ReelMind",
+  "short_name": "ReelMind",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f8fafc",
-  "theme_color": "#111827",
-  "icons": []
+  "background_color": "#f0f2f5",
+  "theme_color": "#ffffff",
+  "icons": [
+    { "src": "/logo.png", "sizes": "any", "type": "image/png" }
+  ]
 }

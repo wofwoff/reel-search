@@ -1,1252 +1,424 @@
-import { FormEvent, memo, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
-  Collection,
-  fetchCollectionReels,
   fetchHealth,
-  fetchLibraryOverview,
   fetchLibraryCount,
-  getStoredSyncIdentity,
-  Health,
-  Reel,
-  createSyncToken,
+  fetchLibraryOverview,
+  fetchRecentReels,
   reclusterCollections,
-  saveReel,
-  waitForJob,
   searchReels,
-  SearchResult,
-  deleteReel,
-  setStoredSyncIdentity,
-  getReelThumbnailUrl
+  type Collection,
+  type Health,
+  type Reel,
+  type SearchResult
 } from "./api";
-import CollectionGallery from "./CollectionGallery";
-import ThumbnailImage from "./ThumbnailImage";
-import { supabase } from "./supabaseClient";
+import BottomNav from "./BottomNav";
+import CollectionSection from "./CollectionSection";
+import DevicesSheet from "./DevicesSheet";
+import Icon, { BrandMark } from "./Icon";
+import { loadSeenReels, reelTitle, rememberSeenReel, sortByLatestReel } from "./library";
+import { classifyOmnibox, toSaveUrl } from "./omnibox";
+import RecentSaves from "./RecentSaves";
+import ReelDetail from "./ReelDetail";
+import ReelTile from "./ReelTile";
+import SaveSheet from "./SaveSheet";
+import SearchResults from "./SearchResults";
+import Sidebar from "./Sidebar";
+import Toasts, { type Toast } from "./Toasts";
+import TopBar from "./TopBar";
+import { useIngestQueue } from "./useIngestQueue";
+import { useSession } from "./useSession";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+type SearchState = { query: string; results: SearchResult[] | null; error: string };
 
-type SaveState = "idle" | "downloading" | "uploading" | "embedding" | "saved" | "failed";
+const UPLOAD_ACCEPT = "video/mp4,video/quicktime,image/jpeg,image/png,image/webp";
+// The worker regroups collections after it marks a job done, so look again shortly after.
+const FOLLOW_UP_REFRESH_MS = 10_000;
 
-type ResourceObj = {
-  title: string;
-  url: string;
-};
-
-const dateFormatter = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit"
-});
-
-function formatDate(value: string) {
-  return dateFormatter.format(new Date(value));
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
-function incrementRecallHits(currentHits: number) {
-  const next = currentHits + 1;
-  localStorage.setItem("reel_search_recall_hits", String(next));
-  return next;
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
 }
-
-function getPlatformName(url: string | undefined, fallback: string = "Instagram") {
-  if (!url) return fallback;
-  if (url.includes("youtube.com") || url.includes("youtu.be")) return "YouTube";
-  return fallback;
-}
-
-const ReelCard = memo(function ReelCard({ reel, score, onClick }: { reel: Reel; score?: number; onClick: () => void }) {
-  const title = reel.title || reel.caption || "Saved reel";
-
-  return (
-    <button
-      type="button"
-      aria-label={`Open ${title}`}
-      onClick={onClick}
-      className="reel-card group flex h-full w-full min-w-0 cursor-pointer flex-col rounded-[16px] border border-outline-variant/70 bg-surface-container-lowest p-2.5 text-left shadow-sm transition-[border-color,box-shadow,transform] duration-200 hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface sm:p-3"
-    >
-      <div className="reel-card__media relative mb-3 flex w-full aspect-video items-center justify-center overflow-hidden rounded-[12px] bg-surface-variant">
-        <ThumbnailImage
-          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-          src={getReelThumbnailUrl(reel)}
-        />
-        
-        <div className="absolute inset-0 bg-black/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-surface/90 shadow-md">
-            <span className="material-symbols-outlined text-[24px] text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>
-              play_arrow
-            </span>
-          </div>
-        </div>
-
-        {score !== undefined && (
-          <div className="absolute right-2 top-2">
-            <span className="rounded-full bg-primary/95 px-2 py-1 text-[10px] font-bold text-on-primary backdrop-blur-sm">
-              {Math.round(score * 100)}% match
-            </span>
-          </div>
-        )}
-      </div>
-
-      <div className="reel-card__content flex flex-grow flex-col gap-2 px-1 pb-1">
-        <span className="line-clamp-1 text-[11px] font-semibold text-primary">{reel.creator || getPlatformName(reel.source_url)}</span>
-        <h3 className="line-clamp-2 font-headline-sm text-[16px] font-semibold leading-[1.25] text-on-surface transition-colors group-hover:text-primary">
-          {title}
-        </h3>
-        {reel.caption && reel.caption !== title && (
-          <p className="line-clamp-2 text-[13px] leading-[1.45] text-on-surface-variant">
-            {reel.caption}
-          </p>
-        )}
-        {reel.collection_name && (
-          <div className="flex flex-wrap gap-1 pt-1">
-            <span className="rounded-full border border-primary/10 bg-primary/5 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-primary">
-              {reel.collection_name}
-            </span>
-          </div>
-        )}
-        <div className="mt-auto flex items-center justify-between gap-2 border-t border-outline-variant/30 pt-2.5">
-          <span className="line-clamp-1 text-[10px] font-medium text-outline">Saved {formatDate(reel.created_at)}</span>
-          <span className="material-symbols-outlined shrink-0 text-[18px] text-primary" aria-hidden="true">open_in_new</span>
-        </div>
-      </div>
-    </button>
-  );
-});
-
-const ReelModal = memo(function ReelModal({ reel, onClose, onDeleteSuccess }: { reel: Reel; onClose: () => void; onDeleteSuccess: () => void }) {
-  const title = reel.title || "Reel Details";
-  const [deleting, setDeleting] = useState(false);
-
-  const { actionableItems, resources, gcsUris } = useMemo(() => {
-    let parsedActionableItems: string[] = [];
-    if (reel.actionable_items) {
-      try {
-        parsedActionableItems = JSON.parse(reel.actionable_items);
-      } catch {
-        parsedActionableItems = reel.actionable_items.split("\n").filter((i) => i.trim());
-      }
-    }
-
-    let parsedResources: ResourceObj[] = [];
-    if (reel.resources) {
-      try {
-        parsedResources = JSON.parse(reel.resources);
-      } catch {
-        // Ignore malformed resource data.
-      }
-    }
-
-    let parsedGcsUris: string[] = [];
-    if (reel.gcs_uri) {
-      if (reel.gcs_uri.startsWith("[")) {
-        try {
-          parsedGcsUris = JSON.parse(reel.gcs_uri);
-        } catch {
-          parsedGcsUris = [reel.gcs_uri];
-        }
-      } else {
-        parsedGcsUris = [reel.gcs_uri];
-      }
-    }
-
-    return {
-      actionableItems: parsedActionableItems,
-      resources: parsedResources,
-      gcsUris: parsedGcsUris
-    };
-  }, [reel]);
-
-  async function handleDeleteClick() {
-    if (!window.confirm("Are you sure you want to permanently delete this reel? This will remove it from GCS and your Database library.")) {
-      return;
-    }
-    setDeleting(true);
-    try {
-      await deleteReel(reel.id);
-      onDeleteSuccess();
-      onClose();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to delete reel");
-    } finally {
-      setDeleting(false);
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-on-background/40 backdrop-blur-md flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div 
-        className="bg-surface rounded-lg border border-outline-variant/50 max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-fade-in"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="px-6 py-4 border-b border-outline-variant/30 flex justify-between items-center bg-surface-container-low">
-          <div>
-            <span className="font-label-sm text-label-sm text-primary uppercase tracking-widest">{reel.creator || getPlatformName(reel.source_url)}</span>
-            <h2 className="font-headline-sm text-on-surface font-bold mt-1 line-clamp-1">{title}</h2>
-          </div>
-          <button className="p-2 hover:bg-primary/5 rounded-full transition-all text-on-surface-variant hover:text-primary" onClick={onClose}>
-            <span className="material-symbols-outlined">close</span>
-          </button>
-        </header>
-
-        <div className="p-6 overflow-y-auto grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6 custom-scrollbar">
-          <div className="flex flex-col gap-4">
-            <div className="aspect-[9/12] rounded-lg overflow-hidden bg-surface-variant border border-outline-variant/30 flex items-center justify-center">
-              <ThumbnailImage
-                className="w-full h-full object-cover"
-                src={getReelThumbnailUrl(reel)}
-              />
-            </div>
-
-            <a 
-              href={reel.source_url} 
-              target="_blank" 
-              rel="noreferrer" 
-              className="bg-primary text-on-primary py-3 rounded-full font-label-md text-label-md bouncy-interaction text-center shadow-md hover:bg-primary/95 transition-all flex items-center justify-center gap-2"
-            >
-              <span className="material-symbols-outlined text-[18px]">open_in_new</span>
-              Open Original
-            </a>
-
-            <button 
-              onClick={handleDeleteClick} 
-              disabled={deleting}
-              className="border border-error/30 text-error hover:bg-error/5 py-3 rounded-full font-label-md text-label-md bouncy-interaction flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              {deleting ? (
-                <span className="material-symbols-outlined animate-spin">sync</span>
-              ) : (
-                <span className="material-symbols-outlined text-[18px]">delete</span>
-              )}
-              Delete Archive
-            </button>
-
-            <div className="space-y-4 pt-4 border-t border-outline-variant/30 text-xs">
-              <div>
-                <p className="font-bold text-outline uppercase tracking-wider mb-1">Status</p>
-                <p className="text-on-surface-variant bg-surface-container px-2 py-1 rounded inline-block font-mono">{reel.ingest_status}</p>
-              </div>
-              <div>
-                <p className="font-bold text-outline uppercase tracking-wider mb-1">Saved</p>
-                <p className="text-on-surface-variant font-medium">{formatDate(reel.created_at)}</p>
-              </div>
-              {gcsUris.length > 0 && (
-                <div>
-                  <p className="font-bold text-outline uppercase tracking-wider mb-1">
-                    {gcsUris.length > 1 ? "Staged Carousel Files" : "GCS Staging Path"}
-                  </p>
-                  <div className="space-y-1">
-                    {gcsUris.map((uri, idx) => (
-                      <span key={idx} className="block font-mono text-[10px] text-on-surface-variant truncate bg-surface-container px-2 py-1 rounded" title={uri}>
-                        {idx + 1}. {uri.split("/").pop()}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {reel.collection_name && (
-                <div>
-                  <p className="font-bold text-outline uppercase tracking-wider mb-1">Collection</p>
-                  <div className="flex flex-wrap gap-1">
-                    <span className="bg-primary/5 text-primary border border-primary/10 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase">
-                      {reel.collection_name}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            {reel.summary ? (
-              <section className="space-y-2">
-                <h3 className="font-label-md text-label-md text-primary uppercase tracking-widest">AI Content Summary</h3>
-                <p className="font-body-md text-body-md text-on-surface-variant bg-surface-container-low p-4 rounded-lg border border-outline-variant/20">
-                  {reel.summary}
-                </p>
-              </section>
-            ) : (
-              <section className="space-y-2">
-                <h3 className="font-label-md text-label-md text-primary uppercase tracking-widest">AI Content Summary</h3>
-                <div className="flex items-center gap-3 bg-error-container/30 border border-error/20 p-4 rounded-lg text-error">
-                  <span className="material-symbols-outlined">warning</span>
-                  <span className="font-body-md text-body-md">No AI summary available. AI summaries are automatically generated for newly saved reels.</span>
-                </div>
-              </section>
-            )}
-
-            {resources.length > 0 && (
-              <section className="space-y-2">
-                <h3 className="font-label-md text-label-md text-primary uppercase tracking-widest">Useful Resources</h3>
-                <ul className="space-y-2">
-                  {resources.map((res, idx) => (
-                    <li key={idx} className="bg-surface-container-low p-3 rounded-lg border border-outline-variant/20 hover:border-primary/45 transition-colors">
-                      <a href={res.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-primary font-bold font-body-md">
-                        <span className="material-symbols-outlined text-[18px]">link</span>
-                        {res.title}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            {actionableItems.length > 0 && (
-              <section className="space-y-2">
-                <h3 className="font-label-md text-label-md text-primary uppercase tracking-widest">Actionable Takeaways</h3>
-                <ul className="space-y-2 bg-surface-container-low p-4 rounded-lg border border-outline-variant/20">
-                  {actionableItems.map((item, idx) => (
-                    <li key={idx} className="flex items-start gap-3 text-on-surface-variant font-body-md">
-                      <span className="material-symbols-outlined text-primary text-[20px] mt-0.5">check_circle</span>
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            {reel.caption && (
-              <section className="space-y-2">
-                <h3 className="font-label-md text-label-md text-primary uppercase tracking-widest">Original Caption</h3>
-                <pre className="text-xs text-on-surface-variant bg-surface-container-low p-4 rounded-lg border border-outline-variant/20 whitespace-pre-wrap max-h-48 overflow-y-auto custom-scrollbar font-sans">
-                  {reel.caption}
-                </pre>
-              </section>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-});
 
 export default function App() {
+  const session = useSession();
   const [health, setHealth] = useState<Health | null>(null);
-  const [library, setLibrary] = useState<Reel[]>([]);
-  const [libraryTotal, setLibraryTotal] = useState(0);
-  const [collections, setCollections] = useState<Collection[]>([]);
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [url, setUrl] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
+  const [count, setCount] = useState<number | null>(null);
+  const [collections, setCollections] = useState<Collection[] | null>(null);
+  const [recent, setRecent] = useState<Reel[] | null>(null);
+  const [libraryError, setLibraryError] = useState("");
   const [query, setQuery] = useState("");
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [saveMessage, setSaveMessage] = useState("");
-  const [searching, setSearching] = useState(false);
-  const [error, setError] = useState("");
+  const [search, setSearch] = useState<SearchState | null>(null);
   const [selectedReel, setSelectedReel] = useState<Reel | null>(null);
-  const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
-  const [collectionLoading, setCollectionLoading] = useState(false);
-  const [reclustering, setReclustering] = useState(false);
-  const [showUploadArea, setShowUploadArea] = useState(false);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [userId, setUserId] = useState<string>("");
-  const [showShortcutGuide, setShowShortcutGuide] = useState(false);
-  const [copiedUserId, setCopiedUserId] = useState(false);
-  const [copiedUrl, setCopiedUrl] = useState(false);
-  const [showSyncModal, setShowSyncModal] = useState(false);
-  const [syncAccessToken, setSyncAccessToken] = useState("");
-  const [syncRefreshToken, setSyncRefreshToken] = useState("");
-  const [pastedSyncCode, setPastedSyncCode] = useState("");
-  const [syncError, setSyncError] = useState("");
-  const [syncSuccess, setSyncSuccess] = useState(false);
-  const [copiedSyncLink, setCopiedSyncLink] = useState(false);
+  const [sheet, setSheet] = useState<"save" | "devices" | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set());
+  const [seen, setSeen] = useState<Set<string>>(loadSeenReels);
+  const [regrouping, setRegrouping] = useState(false);
 
-  const [recallHits, setRecallHits] = useState<number>(() => {
-    const val = localStorage.getItem("reel_search_recall_hits");
-    return val ? parseInt(val, 10) : 0;
-  });
+  const omniboxRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const retryKeyRef = useRef<string | null>(null);
+  const followUpTimer = useRef<number | undefined>(undefined);
+  const staleCollections = useRef<Set<string>>(new Set());
+  const toastId = useRef(0);
 
-  const activeCollectionsCount = collections.length;
+  const dismissToast = useCallback((id: number) => {
+    setToasts((items) => items.filter((toast) => toast.id !== id));
+  }, []);
 
-  const topCollection = useMemo(() => {
-    return collections[0]?.name ?? "None";
-  }, [collections]);
+  const showToast = useCallback((toast: Omit<Toast, "id">) => {
+    const id = ++toastId.current;
+    setToasts((items) => [...items.slice(-2), { ...toast, id }]);
+    window.setTimeout(() => dismissToast(id), toast.action ? 7000 : 4500);
+  }, [dismissToast]);
 
-  const saveLabel = useMemo(() => {
-    if (saveState === "downloading") return "Downloading stream...";
-    if (saveState === "uploading") return "Uploading GCS...";
-    if (saveState === "embedding") return "Embedding vectors...";
-    if (saveState === "saved") return "Saved & Analyzed";
-    if (saveState === "failed") return "Failed";
-    return "Analyze";
-  }, [saveState]);
+  const refreshLibrary = useCallback(async () => {
+    const [overview, recentResult] = await Promise.all([
+      fetchLibraryOverview(),
+      fetchRecentReels().then((reels) => ({ reels, error: null }), (error: unknown) => ({ reels: null, error }))
+    ]);
 
-  const shortcutEndpoint = "https://reel-search-api-771696730702.us-central1.run.app/api/reels/shortcut";
-
-  function copyToClipboard(text: string, setCopied: (v: boolean) => void) {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
-  async function refreshLibrary() {
-    const overview = await fetchLibraryOverview();
-
-    if (overview.count !== null) {
-      setLibraryTotal(overview.count);
-    } else {
-      console.error("Failed to fetch library count:", overview.countError);
-    }
+    if (overview.count !== null) setCount(overview.count);
+    else console.error("Failed to fetch library count:", overview.countError);
 
     if (overview.collections !== null) {
       setCollections(overview.collections);
+      setLibraryError("");
     } else {
       console.error("Failed to fetch collections:", overview.collectionsError);
-      setCollections([]);
-    }
-  }
-
-  function importSyncIdentity(userIdParam: string | null, syncTokenParam: string | null) {
-    if (!userIdParam || !syncTokenParam) return false;
-    setStoredSyncIdentity(userIdParam, syncTokenParam);
-    setUserId(userIdParam);
-    return true;
-  }
-
-  async function importSupabaseSync(accessToken: string | null, refreshToken: string | null) {
-    if (!refreshToken) return null;
-    if (accessToken) {
-      const res = await supabase.auth.setSession({
-        access_token: accessToken,
-        refresh_token: refreshToken
-      });
-      if (!res.error) return null;
-      const refreshRes = await supabase.auth.refreshSession({
-        refresh_token: refreshToken
-      });
-      return refreshRes.error;
+      setCollections((current) => current ?? []);
+      setLibraryError(overview.collectionsError instanceof Error ? overview.collectionsError.message : "Couldn't load your collections");
     }
 
-    const res = await supabase.auth.refreshSession({
-      refresh_token: refreshToken
-    });
-    return res.error;
-  }
-
-  function buildSyncLink() {
-    const syncIdentity = getStoredSyncIdentity();
-    let base = window.location.origin;
-    if (base.startsWith("capacitor://") || base.includes("localhost")) {
-      base = "https://reel-search-frontend-771696730702.us-central1.run.app";
+    if (recentResult.reels) setRecent(recentResult.reels);
+    else {
+      console.error("Failed to fetch recent reels:", recentResult.error);
+      setRecent((current) => current ?? []);
     }
-    const path = base === "https://reel-search-frontend-771696730702.us-central1.run.app" ? "/" : window.location.pathname;
+  }, []);
 
-    if (syncIdentity.userId && syncIdentity.token) {
-      return `${base}${path}?user_id=${encodeURIComponent(syncIdentity.userId)}&sync_token=${encodeURIComponent(syncIdentity.token)}`;
-    }
-    if (syncAccessToken && syncRefreshToken) {
-      return `${base}${path}?access_token=${encodeURIComponent(syncAccessToken)}&refresh_token=${encodeURIComponent(syncRefreshToken)}`;
-    }
-    return "";
-  }
+  const refreshSoonAndLater = useCallback(() => {
+    void refreshLibrary();
+    window.clearTimeout(followUpTimer.current);
+    followUpTimer.current = window.setTimeout(() => void refreshLibrary(), FOLLOW_UP_REFRESH_MS);
+  }, [refreshLibrary]);
 
-  const syncLink = showSyncModal ? buildSyncLink() : "";
-
-  async function importSyncInput(value: string) {
-    let token = value.trim();
-    let accessToken = "";
-    let importUserId = "";
-    let importSyncToken = "";
-
-    // 1. Check if the token is a raw sync token (starts with "v1.") but doesn't have query params
-    if (token.startsWith("v1.") && !token.includes("?")) {
-      throw new Error("Sync token requires a User ID. Please paste the full Sync Link instead.");
-    }
-
-    try {
-      // 2. Prepend protocol if it looks like a URL but is missing scheme
-      if (!/^https?:\/\//i.test(token) && (token.includes("user_id=") || token.includes("sync_token="))) {
-        token = "https://" + token;
-      }
-
-      if (token.includes("?")) {
-        const urlObj = new URL(token);
-        token = urlObj.searchParams.get("refresh_token") || urlObj.searchParams.get("sync") || token;
-        accessToken = urlObj.searchParams.get("access_token") || "";
-        importUserId = urlObj.searchParams.get("user_id") || "";
-        importSyncToken = urlObj.searchParams.get("sync_token") || "";
-      }
-    } catch {
-      // Treat raw input as a legacy refresh token.
-    }
-
-    if (importUserId && importSyncToken) {
-      // 3. Validate the credentials with the backend before saving them to localStorage
-      try {
-        const validateRes = await fetch(`${API_BASE}/api/reels/count`, {
-          headers: {
-            "X-Reel-User-Id": importUserId,
-            "X-Reel-Sync-Token": importSyncToken,
-          },
-        });
-        if (validateRes.status === 401) {
-          throw new Error("Invalid sync token");
-        }
-        if (!validateRes.ok) {
-          throw new Error(`Sync validation failed: Server returned ${validateRes.status}`);
-        }
-      } catch (err) {
-        throw err instanceof Error ? err : new Error("Invalid sync token");
-      }
-
-      if (importSyncIdentity(importUserId, importSyncToken)) {
-        await refreshLibrary();
-        return;
-      }
-    }
-
-    const error = await importSupabaseSync(accessToken, token);
-    if (error) throw error;
-  }
-
-  async function handleRecluster() {
-    setReclustering(true);
-    setError("");
-    try {
-      const [groupedCollections, countResult] = await Promise.all([
-        reclusterCollections(),
-        fetchLibraryCount()
-      ]);
-      setCollections(groupedCollections);
-      setLibraryTotal(countResult.count);
-      if (selectedCollectionId && !groupedCollections.some((collection) => collection.id === selectedCollectionId)) {
-        setSelectedCollectionId(null);
-        setLibrary([]);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to refresh collections");
-    } finally {
-      setReclustering(false);
-    }
-  }
+  useEffect(() => () => window.clearTimeout(followUpTimer.current), []);
 
   useEffect(() => {
     fetchHealth().then(setHealth).catch(() => setHealth(null));
   }, []);
 
   useEffect(() => {
-    let active = true;
+    if (session.sessionKey > 0) void refreshLibrary();
+  }, [session.sessionKey, refreshLibrary]);
 
-    const initAuth = async () => {
-      try {
-        const urlParams = new URLSearchParams(window.location.search);
-        const accessTokenParam = urlParams.get("access_token");
-        const refreshTokenParam = urlParams.get("refresh_token") || urlParams.get("sync");
-        const userIdParam = urlParams.get("user_id");
-        const syncTokenParam = urlParams.get("sync_token");
-        
-        if (importSyncIdentity(userIdParam, syncTokenParam)) {
-          window.history.replaceState({}, document.title, window.location.pathname);
-        } else if (refreshTokenParam) {
-          setIsAuthLoading(true);
-          const error = await importSupabaseSync(accessTokenParam, refreshTokenParam);
-          if (error) {
-            console.error("Failed to import sync session:", error);
-          }
-          window.history.replaceState({}, document.title, window.location.pathname);
-        }
-
-        const syncIdentity = getStoredSyncIdentity();
-        if (active && syncIdentity.userId && syncIdentity.token) {
-          setUserId(syncIdentity.userId);
-          refreshLibrary();
-          return;
-        }
-
-        const { data: { session } } = await supabase.auth.getSession();
-        if (active) {
-          if (!session) {
-            await supabase.auth.signInAnonymously();
-          } else {
-            if (session.user) {
-              setUserId(session.user.id);
-            }
-            refreshLibrary();
-          }
-        }
-      } catch (err) {
-        console.error("Auth initialization failed:", err);
-      } finally {
-        if (active) {
-          setIsAuthLoading(false);
-        }
-      }
-    };
-
-    initAuth();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (active) {
-        const syncIdentity = getStoredSyncIdentity();
-        if (syncIdentity.userId && syncIdentity.token) {
-          setUserId(syncIdentity.userId);
-          setIsAuthLoading(false);
-          refreshLibrary();
-        } else if (!session) {
-          setIsAuthLoading(true);
-          setUserId("");
-          await supabase.auth.signInAnonymously();
-        } else {
-          if (session.user) {
-            setUserId(session.user.id);
-          }
-          setIsAuthLoading(false);
-          refreshLibrary();
-        }
-      }
-    });
-
-    return () => {
-      active = false;
-      subscription.unsubscribe();
-    };
+  const openReel = useCallback((reel: Reel) => {
+    setSelectedReel(reel);
+    setSeen((current) => rememberSeenReel(current, reel.id));
   }, []);
 
-  async function onSave(event: FormEvent) {
-    event.preventDefault();
-    if (!url.trim() && files.length === 0) return;
-    setError("");
-    setSaveMessage("");
-    setSaveState(url ? "downloading" : "uploading");
-    const embeddingTimeout = setTimeout(() => setSaveState("embedding"), 500);
+  const queue = useIngestQueue({
+    onSaved: (reel) => {
+      showToast({
+        message: reel ? `Saved “${reelTitle(reel)}”` : "Reel saved",
+        action: reel ? { label: "View", onClick: () => openReel(reel) } : undefined
+      });
+      refreshSoonAndLater();
+    },
+    onDuplicate: (reel) => {
+      showToast({ message: "Already in your library", action: { label: "View", onClick: () => openReel(reel) } });
+    },
+    onError: (message) => showToast({ message, tone: "error" })
+  });
+
+  const clearSearch = useCallback(() => setSearch(null), []);
+
+  async function runSearch(text: string) {
+    setSearch({ query: text, results: null, error: "" });
+    scrollToTop();
     try {
-      if (files.length > 0 && !url) {
-        setSaveState("uploading");
-      }
-      const response = await saveReel(url, files);
-      if (response.job) {
-        setSaveState("embedding");
-        await waitForJob(response.job.id);
-      }
-      clearTimeout(embeddingTimeout);
-      setSaveState("saved");
-      setSaveMessage(response.duplicate ? "Reel is already in library!" : "Reel saved and analyzed.");
-      setUrl("");
-      setFiles([]);
-      setShowUploadArea(false);
-      await refreshLibrary();
+      const results = await searchReels(text, 30);
+      setSearch((current) => (current?.query === text ? { ...current, results } : current));
     } catch (err) {
-      clearTimeout(embeddingTimeout);
-      setSaveState("failed");
-      setError(err instanceof Error ? err.message : "Save failed");
+      const error = err instanceof Error ? err.message : "Search failed";
+      setSearch((current) => (current?.query === text ? { ...current, error } : current));
     }
   }
 
-  async function onSearch(event: FormEvent) {
-    event.preventDefault();
-    if (!query.trim()) {
-      setResults([]);
+  function startSave(url: string, files: File[] = []) {
+    void queue.save(url, files);
+    setSearch(null);
+    scrollToTop();
+  }
+
+  function submitOmnibox() {
+    const mode = classifyOmnibox(query);
+    if (mode === "save") {
+      startSave(toSaveUrl(query));
+      setQuery("");
+    } else if (mode === "search") {
+      void runSearch(query.trim());
+      omniboxRef.current?.blur();
+    }
+  }
+
+  function chooseFiles(retryKey: string | null = null) {
+    retryKeyRef.current = retryKey;
+    fileInputRef.current?.click();
+  }
+
+  function onFilesChosen(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length === 0) return;
+    setSheet(null);
+    const retryKey = retryKeyRef.current;
+    retryKeyRef.current = null;
+    if (retryKey) {
+      queue.retryWithFiles(retryKey, files);
+      scrollToTop();
       return;
     }
-    setError("");
-    setSearching(true);
-    try {
-      const searchResults = await searchReels(query.trim());
-      setResults(searchResults);
-      
-      // Increment recall hits if we found a relevant match (score >= 0.70)
-      const hasHit = searchResults.some(r => r.score && r.score >= 0.70);
-      if (hasHit) {
-        setRecallHits(incrementRecallHits);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Search failed");
-    } finally {
-      setSearching(false);
-    }
+    // A link in the box goes along with the files, so the files act as its fallback.
+    const link = classifyOmnibox(query) === "save" ? toSaveUrl(query) : "";
+    if (link) setQuery("");
+    startSave(link, files);
   }
 
-  function handleReelDelete(deletedId: string) {
-    setLibrary((prev) => prev.filter((r) => r.id !== deletedId));
-    setResults((prev) => prev.filter((r) => r.id !== deletedId));
-    setLibraryTotal((prev) => Math.max(0, prev - 1));
+  function goHome() {
+    setQuery("");
+    clearSearch();
+    scrollToTop();
+  }
+
+  function focusSearch() {
+    scrollToTop();
+    omniboxRef.current?.focus();
+  }
+
+  function jumpTo(anchorId: string) {
+    clearSearch();
+    // Wait a frame so the library is back on screen when leaving search results.
+    requestAnimationFrame(() => {
+      document.getElementById(anchorId)?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+    });
+  }
+
+  const handleDeleted = useCallback((reelId: string) => {
+    setHiddenIds((current) => new Set(current).add(reelId));
+    setSelectedReel(null);
+    setCount((current) => (current === null ? current : Math.max(0, current - 1)));
+    showToast({ message: "Reel deleted" });
+    refreshSoonAndLater();
+  }, [refreshSoonAndLater, showToast]);
+
+  const handleStaleCollection = useCallback((collectionId: string) => {
+    if (staleCollections.current.has(collectionId)) return;
+    staleCollections.current.add(collectionId);
     void refreshLibrary();
-  }
+  }, [refreshLibrary]);
 
-  const selectedCollection = useMemo(() => {
-    return collections.find((collection) => collection.id === selectedCollectionId) ?? null;
-  }, [collections, selectedCollectionId]);
-
-  async function openCollection(collection: Collection) {
-    setSelectedCollectionId(collection.id);
-    setResults([]);
-    setLibrary([]);
-    setCollectionLoading(true);
-    setError("");
+  async function regroup() {
+    setRegrouping(true);
     try {
-      setLibrary(await fetchCollectionReels(collection.id));
+      const [grouped, countResult] = await Promise.all([reclusterCollections(), fetchLibraryCount()]);
+      setCollections(grouped);
+      setCount(countResult.count);
+      showToast({ message: "Collections regrouped" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load this collection");
+      showToast({ message: err instanceof Error ? err.message : "Couldn't regroup collections", tone: "error" });
     } finally {
-      setCollectionLoading(false);
+      setRegrouping(false);
     }
   }
 
-  function closeCollection() {
-    setSelectedCollectionId(null);
-    setLibrary([]);
-  }
+  const sortedCollections = useMemo(() => (collections ? sortByLatestReel(collections) : null), [collections]);
+  const visibleRecent = useMemo(() => recent?.filter((reel) => !hiddenIds.has(reel.id)) ?? null, [recent, hiddenIds]);
+  const libraryEmpty = count === 0 && visibleRecent?.length === 0 && queue.pending.length === 0;
 
-  if (isAuthLoading) {
+  if (session.isAuthLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-surface">
-        <div className="text-center space-y-6 max-w-sm px-6">
-          <div className="w-16 h-16 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto"></div>
-          <div className="space-y-2">
-            <h3 className="font-headline-sm text-headline-sm text-on-surface">Initializing secure session</h3>
-            <p className="text-on-surface-variant font-body-md">Setting up your private workspace...</p>
-          </div>
-        </div>
+      <div className="boot" role="status">
+        <BrandMark size={56} />
+        <span className="boot__spinner" aria-hidden="true" />
+        <span className="sr-only">Loading your library</span>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col max-w-full overflow-x-hidden selection:bg-primary-fixed selection:text-on-primary-fixed">
-      {/* TopNavBar */}
-      <header className="fixed top-0 w-full z-50 bg-surface/80 backdrop-blur-md border-b border-outline-variant/30 shadow-sm">
-        <div className="app-shell flex h-16 items-center justify-between">
-          <div className="flex min-w-0 items-center gap-4 md:gap-8">
-            <div className="flex items-center gap-2">
-              <img src="/logo.png" alt="ReelMind Logo" className="w-8 h-8 rounded-full object-cover shrink-0" />
-              <span className="font-headline-sm text-headline-sm font-bold text-primary">ReelMind</span>
-            </div>
-            <nav className="hidden md:flex gap-6">
-              <a 
-                className="text-primary font-bold border-b-2 border-primary pb-1 font-body-md text-body-md" 
-                href="#"
-                onClick={(e) => {
-                  e.preventDefault();
-                  window.scrollTo({ top: 0, behavior: "smooth" });
-                }}
-              >
-                Dashboard
-              </a>
-              <a 
-                className="text-on-surface-variant font-medium hover:text-primary transition-colors font-body-md text-body-md" 
-                href="#library-section" 
-                onClick={(e) => {
-                  e.preventDefault();
-                  closeCollection();
-                  document.getElementById("library-section")?.scrollIntoView({ behavior: "smooth" });
-                }}
-              >
-                Library
-              </a>
-            </nav>
-          </div>
-          <div className="flex items-center gap-4">
-            {health && (
-              <div className="hidden xl:flex items-center gap-2 bg-surface-container-low px-4 py-1.5 rounded-full border border-outline-variant/20 text-xs text-on-surface-variant font-medium">
-                <div className={`w-2 h-2 rounded-full ${health.ok ? "bg-tertiary" : "bg-error"}`}></div>
-                <span>{health.ok ? "Supabase, GCS & Gemini Connected" : `Missing configuration: ${health.missing_env.join(", ")}`}</span>
-              </div>
-            )}
-            <button 
-              onClick={() => {
-                document.getElementById("ingest-input")?.focus();
-                window.scrollTo({ top: 0, behavior: "smooth" });
-              }}
-              className="min-h-11 bg-primary text-on-primary px-4 sm:px-6 py-2 rounded-full font-label-md text-xs sm:text-label-md bouncy-interaction shadow-md hover:bg-primary/90 transition-all"
-            >
-              Ingest URL
-            </button>
-          </div>
+    <div className="app">
+      <a className="skip-link" href="#library">Skip to library</a>
+      <TopBar
+        ref={omniboxRef}
+        query={query}
+        onQueryChange={setQuery}
+        onSubmit={submitOmnibox}
+        onClear={() => { setQuery(""); clearSearch(); }}
+        onHome={goHome}
+        onOpenSave={() => setSheet("save")}
+        onUpload={() => chooseFiles()}
+        onOpenDevices={() => setSheet("devices")}
+      />
+
+      {health && !health.ok && (
+        <div className="banner" role="status">
+          <Icon name="alert" size={18} />
+          Server setup is incomplete. Missing: {health.missing_env.join(", ")}
         </div>
-      </header>
+      )}
 
-      <main className="pt-24 pb-16 flex-grow">
-        {/* Hero Section */}
-        <section className="app-shell py-10 text-center md:py-14">
-          <div className="space-y-8">
-            <div className="mx-auto max-w-3xl space-y-6">
-              <h1 className="text-balance font-headline-lg text-headline-lg-mobile leading-tight text-on-surface md:text-headline-lg">Turn scrolls into insights.</h1>
-              <p className="text-pretty font-body-lg text-body-lg text-on-surface-variant max-w-2xl mx-auto">
-                ReelMind captures the wisdom hidden in your social feed. Paste an Instagram or YouTube URL, or upload local files, and let our AI distill them into actionable takeaways.
-              </p>
-            </div>
+      <div className="layout">
+        <Sidebar
+          collections={sortedCollections}
+          regrouping={regrouping}
+          onJump={jumpTo}
+          onRegroup={regroup}
+          onOpenDevices={() => setSheet("devices")}
+        />
 
-            <form onSubmit={onSave} className="save-form-width space-y-4">
-              <div className="soft-glow-focus group">
-                <div className="save-control-shell rounded-[16px] border border-outline-variant bg-surface-container-low p-2 shadow-md transition-shadow duration-200 group-hover:shadow-lg sm:rounded-full">
-                  <div className="save-input-cluster">
-                    <span className="material-symbols-outlined ml-2 shrink-0 text-primary sm:ml-3">link</span>
-                    <input
-                      id="ingest-input"
-                      className="save-url-input bg-transparent border-none focus:ring-0 px-3 sm:px-4 font-body-md text-body-md text-on-surface-variant placeholder:text-outline outline-none text-ellipsis"
-                      placeholder="Paste Instagram or YouTube URL here..."
-                      type="text"
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                      disabled={saveState === "downloading" || saveState === "uploading" || saveState === "embedding"}
-                    />
-                  </div>
-                  <button 
-                    type="submit"
-                    disabled={saveState === "downloading" || saveState === "uploading" || saveState === "embedding" || (!url.trim() && files.length === 0)}
-                    className="save-analyze-button bg-primary text-on-primary px-5 sm:px-8 py-2 rounded-full font-label-md text-label-md bouncy-interaction transition-colors flex items-center gap-2 disabled:opacity-50 shrink-0 hover:bg-primary/90"
-                  >
-                    {saveState === "downloading" || saveState === "uploading" || saveState === "embedding" ? (
-                      <span className="material-symbols-outlined animate-spin text-[18px] sm:text-[20px]">sync</span>
-                    ) : (
-                      <span className="material-symbols-outlined text-[18px] sm:text-[20px]">auto_awesome</span>
-                    )}
-                    <span>{saveLabel}</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex justify-center items-center gap-4 text-xs font-semibold text-on-surface-variant">
-                <button 
-                  type="button"
-                  onClick={() => setShowUploadArea(!showUploadArea)} 
-                  className="text-primary hover:underline flex items-center gap-1.5"
-                >
-                  <span className="material-symbols-outlined text-[16px]">upload_file</span>
-                  {showUploadArea ? "Hide file upload" : "Or upload local file fallback"}
+        <main className="feed" id="library">
+          {search ? (
+            <SearchResults
+              query={search.query}
+              results={search.results}
+              error={search.error}
+              hiddenIds={hiddenIds}
+              onOpen={openReel}
+              onClear={() => { setQuery(""); clearSearch(); }}
+            />
+          ) : libraryEmpty ? (
+            <section className="card welcome" aria-labelledby="welcome-heading">
+              <BrandMark size={48} />
+              <h2 id="welcome-heading" className="welcome__title">Save your first reel</h2>
+              <p className="muted">Paste an Instagram or YouTube link above. ReelMind watches it, writes down the takeaways and files it into a collection, so you can find it later by describing it.</p>
+              <div className="welcome__actions">
+                <button type="button" className="btn btn--primary" onClick={() => setSheet("save")}>
+                  <Icon name="plus" size={18} /> Save a reel
+                </button>
+                <button type="button" className="btn" onClick={() => setSheet("devices")}>
+                  <Icon name="bolt" size={18} /> Set up iPhone Shortcut
                 </button>
               </div>
-
-              {showUploadArea && (
-                <div className="mx-auto flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-[16px] border-2 border-dashed border-outline-variant/50 bg-surface-container-low p-6 transition-colors hover:bg-surface-container-high relative">
-                  <input 
-                    type="file" 
-                    multiple
-                    accept="video/mp4,video/quicktime,image/jpeg,image/png,image/webp"
-                    className="absolute inset-0 opacity-0 cursor-pointer"
-                    onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
-                  />
-                  <span className="material-symbols-outlined text-[36px] text-primary">upload</span>
-                  <span className="font-body-md text-body-md text-on-surface-variant">
-                    {files.length > 0 ? `Selected ${files.length} files: ${files.map(f => f.name).join(", ")}` : "Click or drag files (MP4, QuickTime, JPG, PNG, WEBP)"}
-                  </span>
-                </div>
-              )}
-
-              {saveMessage && <p className="text-tertiary font-bold text-center text-sm">{saveMessage}</p>}
-              {error && <p className="text-error font-bold text-center text-sm">{error}</p>}
-            </form>
-          </div>
-        </section>
-
-        {/* Stats Bar */}
-        <section className="app-shell mb-10 animate-fade-in md:mb-14">
-          <div className="stats-grid overflow-hidden rounded-[16px] border border-outline-variant/30 bg-surface-container-low">
-            <div className="stat-item flex items-center justify-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-primary-fixed flex items-center justify-center text-on-primary-fixed-variant">
-                <span className="material-symbols-outlined">video_library</span>
-              </div>
-              <div>
-                <p className="font-headline-sm text-[20px] text-on-surface font-bold">{libraryTotal}</p>
-                <p className="font-label-sm text-label-sm text-on-surface-variant">Archive Items</p>
-              </div>
-            </div>
-            <div className="stat-item flex items-center justify-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-tertiary-fixed flex items-center justify-center text-on-tertiary-fixed-variant">
-                <span className="material-symbols-outlined">track_changes</span>
-              </div>
-              <div>
-                <p className="font-headline-sm text-[20px] text-on-surface font-bold">{recallHits}</p>
-                <p className="font-label-sm text-label-sm text-on-surface-variant">Recall Hits</p>
-              </div>
-            </div>
-            <div className="stat-item flex items-center justify-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-secondary-fixed flex items-center justify-center text-on-secondary-fixed-variant">
-                <span className="material-symbols-outlined">auto_awesome_motion</span>
-              </div>
-              <div>
-                <p className="font-headline-sm text-[20px] text-on-surface font-bold">{activeCollectionsCount}</p>
-                <p className="font-label-sm text-label-sm text-on-surface-variant">Collections</p>
-              </div>
-            </div>
-            <div className="stat-item flex items-center justify-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-primary-fixed flex items-center justify-center text-on-primary-fixed-variant">
-                <span className="material-symbols-outlined">workspace_premium</span>
-              </div>
-              <div>
-                <p className="font-headline-sm text-[20px] text-on-surface font-bold truncate max-w-[160px]" title={topCollection}>{topCollection}</p>
-                <p className="font-label-sm text-label-sm text-on-surface-variant">Top Collection</p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Library tools and collection-first gallery */}
-        <section id="library-section" className="app-shell space-y-10 md:space-y-14">
-          <aside className="utility-grid gap-4">
-            {/* iOS/macOS Shortcut Guide */}
-            <div className="rounded-[16px] border border-outline-variant/40 bg-surface-container-low p-5 space-y-4">
-              <button 
-                onClick={() => setShowShortcutGuide(!showShortcutGuide)}
-                className="flex items-center justify-between w-full font-label-md text-label-md text-primary text-left"
-              >
-                <span className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[18px]">cell_tower</span>
-                  Shortcut Setup
-                </span>
-                <span className="material-symbols-outlined">
-                  {showShortcutGuide ? "expand_less" : "expand_more"}
-                </span>
-              </button>
-              {showShortcutGuide && (
-                <div className="space-y-4 pt-2 text-xs text-on-surface-variant animate-fade-in">
-                  <p className="font-body-md text-body-md text-[11px] leading-relaxed">
-                    Set up an Apple Shortcut to save URLs directly from your Share Sheet.
-                  </p>
-                  
-                  <div className="space-y-2">
-                    <p className="font-bold text-[10px] text-outline uppercase tracking-wider">1. Webhook Endpoint</p>
-                    <div className="flex items-center gap-1 bg-surface-container-high rounded px-2 py-1 font-mono text-[9px] truncate">
-                      <span className="truncate flex-grow">{shortcutEndpoint}</span>
-                      <button 
-                        onClick={() => copyToClipboard(shortcutEndpoint, setCopiedUrl)}
-                        className="text-primary hover:text-primary/80"
-                        type="button"
-                        title="Copy URL"
-                      >
-                        <span className="material-symbols-outlined text-[14px]">
-                          {copiedUrl ? "check" : "content_copy"}
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <p className="font-bold text-[10px] text-outline uppercase tracking-wider">2. Your User ID</p>
-                    <div className="flex items-center gap-1 bg-surface-container-high rounded px-2 py-1 font-mono text-[9px]">
-                      <span className="truncate flex-grow">{userId || "Loading..."}</span>
-                      {userId && (
-                        <button 
-                          onClick={() => copyToClipboard(userId, setCopiedUserId)}
-                          className="text-primary hover:text-primary/80"
-                          type="button"
-                          title="Copy User ID"
-                        >
-                          <span className="material-symbols-outlined text-[14px]">
-                            {copiedUserId ? "check" : "content_copy"}
-                          </span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-outline-variant/30 space-y-1.5 text-[10px]">
-                    <p className="font-bold text-outline uppercase tracking-wider">Shortcut Config:</p>
-                    <ul className="list-disc pl-4 space-y-1">
-                      <li>Set Shortcut input type to <strong>URLs</strong>.</li>
-                      <li>Use <strong>Get Contents of URL</strong> action set to <strong>POST</strong>.</li>
-                      <li>Add Form keys: <code>url</code> (input), <code>user_id</code> (above), and <code>token</code> (your secret).</li>
-                    </ul>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Sync Devices Guide */}
-            <div className="rounded-[16px] border border-outline-variant/40 bg-surface-container-low p-5 space-y-4">
-              <button 
-                onClick={async () => {
-                  setShowSyncModal(true);
-                  setSyncError("");
-                  setSyncSuccess(false);
-                  try {
-                    const issued = await createSyncToken();
-                    setStoredSyncIdentity(issued.user_id, issued.sync_token);
-                    setUserId(issued.user_id);
-                    setSyncAccessToken("");
-                    setSyncRefreshToken("");
-                  } catch (e) {
-                    console.error("Failed to create sync link", e);
-                    setSyncError(e instanceof Error ? e.message : "Failed to create sync link");
-                  }
-                }}
-                className="flex items-center justify-between w-full font-label-md text-label-md text-primary text-left"
-              >
-                <span className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[18px]">sync</span>
-                  Sync Devices
-                </span>
-                <span className="material-symbols-outlined">
-                  chevron_right
-                </span>
-              </button>
-            </div>
-          </aside>
-
-          {/* Search, collection covers, and on-demand collection reels */}
-          <div className="space-y-8">
-            <div className="flex flex-col justify-between items-start gap-4 pb-4 border-b border-outline-variant/30 lg:flex-row lg:items-end">
-              <div>
-                {selectedCollection && (
-                  <button
-                    type="button"
-                    onClick={closeCollection}
-                    className="mb-3 inline-flex items-center gap-1 text-sm font-semibold text-primary hover:underline"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">arrow_back</span>
-                    All collections
-                  </button>
-                )}
-                <h2 className="font-headline-md text-headline-md text-on-surface">
-                  {selectedCollection ? selectedCollection.name : "Your Library"}
-                </h2>
-                <p className="mt-2 text-sm text-on-surface-variant">
-                  {selectedCollection
-                    ? `${selectedCollection.domain || "Other"} · ${selectedCollection.reel_count} ${selectedCollection.reel_count === 1 ? "reel" : "reels"}`
-                    : `${libraryTotal} saved reels · ${activeCollectionsCount} ${activeCollectionsCount === 1 ? "collection" : "collections"}`}
-                </p>
-              </div>
-              
-              {/* Semantic search row */}
-              <form onSubmit={onSearch} className="flex min-h-11 w-full max-w-lg items-center gap-2 rounded-full border border-outline-variant bg-surface-container-low py-1 pl-4 pr-1 shadow-sm transition-colors focus-within:border-primary">
-                <span className="material-symbols-outlined text-[20px] text-outline">search</span>
-                <input 
-                  className="bg-transparent border-none focus:ring-0 p-0 text-sm placeholder:text-outline text-on-surface-variant outline-none min-w-0 w-full mr-2" 
-                  placeholder="Semantic search query..." 
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-                {query.trim() && (
-                  <button 
-                    type="button" 
-                    onClick={() => { setQuery(""); setResults([]); }}
-                    className="text-outline hover:text-primary mr-2"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">close</span>
-                  </button>
-                )}
-                <button 
-                  type="submit" 
-                  className="bg-primary text-on-primary hover:bg-primary/95 text-xs font-bold px-4 py-2 rounded-full transition-all bouncy-interaction flex items-center gap-1 shrink-0 shadow-sm"
-                >
-                  Search
-                </button>
-              </form>
-            </div>
-
-            {searching && (
-              <div className="flex items-center justify-center gap-2 py-12 text-primary font-bold">
-                <span className="material-symbols-outlined animate-spin">sync</span>
-                <span>Searching your memory database...</span>
-              </div>
-            )}
-
-            {results.length > 0 && !searching && (
-              <div className="space-y-6 bg-surface-container-low p-6 rounded-lg border border-outline-variant/30">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-label-md text-label-md text-primary uppercase tracking-widest">Relevance Search Matches</h3>
-                  <button onClick={() => setResults([])} className="text-xs text-outline hover:text-primary font-bold">Clear Matches</button>
-                </div>
-                <div className="reel-grid">
-                  {results.map((reel) => (
-                    <ReelCard 
-                      key={reel.id} 
-                      reel={reel} 
-                      score={reel.score} 
-                      onClick={() => {
-                        setSelectedReel(reel);
-                        setRecallHits(incrementRecallHits);
-                      }} 
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {!searching && results.length === 0 && !selectedCollection && (
-              <CollectionGallery
-                collections={collections}
-                refreshing={reclustering}
-                onRefresh={handleRecluster}
-                onSelect={openCollection}
+            </section>
+          ) : (
+            <>
+              <RecentSaves
+                reels={visibleRecent}
+                pending={queue.pending}
+                seen={seen}
+                onOpen={openReel}
+                onRetryWithFile={(key) => chooseFiles(key)}
+                onDismiss={queue.dismiss}
               />
-            )}
 
-            {!searching && results.length === 0 && selectedCollection && (
-              <div className="space-y-6">
-                {selectedCollection.description && (
-                  <p className="max-w-2xl text-pretty text-on-surface-variant">{selectedCollection.description}</p>
-                )}
-                {collectionLoading ? (
-                  <div className="reel-grid" aria-label="Loading collection reels">
-                    {[0, 1, 2].map((index) => (
-                      <div key={index} className="h-[320px] animate-pulse rounded-[16px] bg-surface-container-low" />
-                    ))}
-                  </div>
-                ) : library.length > 0 ? (
-                  <div className="reel-grid">
-                    {library.map((reel) => (
-                      <ReelCard key={reel.id} reel={reel} onClick={() => setSelectedReel(reel)} />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="rounded-[16px] border border-dashed border-outline-variant/40 py-14 text-center text-on-surface-variant">
-                    No reels are available in this collection yet.
-                  </div>
-                )}
+              <div className="library__header">
+                <div>
+                  <h2 className="library__title">Library</h2>
+                  {count !== null && collections !== null && (
+                    <p className="muted">
+                      {count} {count === 1 ? "reel" : "reels"} in {collections.length} {collections.length === 1 ? "collection" : "collections"}
+                    </p>
+                  )}
+                </div>
+                <button type="button" className="btn btn--ghost" onClick={regroup} disabled={regrouping}>
+                  <Icon name="refresh" size={18} className={regrouping ? "spin" : undefined} />
+                  {regrouping ? "Regrouping…" : "Regroup"}
+                </button>
               </div>
-            )}
-          </div>
-        </section>
-      </main>
 
-      {/* Footer */}
-      <footer className="w-full py-12 mt-auto bg-surface-container-low border-t border-outline-variant/20">
-        <div className="app-shell flex flex-col items-center justify-between gap-4 md:flex-row">
-          <div className="flex flex-col items-center md:items-start gap-2">
-            <div className="flex items-center gap-2">
-              <img src="/logo.png" alt="ReelMind Logo" className="w-6 h-6 rounded-full object-cover shrink-0" />
-              <span className="font-headline-sm text-[18px] font-bold text-primary">ReelMind</span>
-            </div>
-            <p className="font-label-sm text-label-sm text-on-secondary-fixed-variant">© 2026 ReelMind. Built for focus.</p>
-          </div>
-          <div className="flex gap-8">
-            <a className="font-label-sm text-label-sm text-on-secondary-fixed-variant hover:text-primary hover:underline" href="#">Privacy</a>
-            <a className="font-label-sm text-label-sm text-on-secondary-fixed-variant hover:text-primary hover:underline" href="#">Terms</a>
-            <a className="font-label-sm text-label-sm text-on-secondary-fixed-variant hover:text-primary hover:underline" href="#">Support</a>
-          </div>
-        </div>
-      </footer>
+              {libraryError && (
+                <div className="card notice" role="alert">
+                  <span>{libraryError}</span>
+                  <button type="button" className="btn" onClick={() => void refreshLibrary()}>Try again</button>
+                </div>
+              )}
+
+              {sortedCollections === null
+                ? Array.from({ length: 2 }, (_, index) => (
+                  <section key={index} className="card collection collection--skeleton" aria-hidden="true">
+                    <div className="collection__header"><span className="collection__cover" /><span className="skeleton-line" /></div>
+                    <ul className="collection__grid">
+                      {Array.from({ length: 6 }, (__, tile) => (
+                        <li key={tile}><span className="tile tile--skeleton"><span className="tile__media" /></span></li>
+                      ))}
+                    </ul>
+                  </section>
+                ))
+                : sortedCollections.map((collection) => (
+                  <CollectionSection
+                    key={collection.id}
+                    collection={collection}
+                    hiddenIds={hiddenIds}
+                    onOpen={openReel}
+                    onStale={handleStaleCollection}
+                  />
+                ))}
+
+              {sortedCollections?.length === 0 && !libraryError && visibleRecent && visibleRecent.length > 0 && (
+                <section className="card" aria-labelledby="all-reels-heading">
+                  <div className="card__header">
+                    <h2 id="all-reels-heading" className="card__title">All reels</h2>
+                    <span className="muted">Collections are still being organized</span>
+                  </div>
+                  <ul className="collection__grid">
+                    {visibleRecent.map((reel) => (
+                      <li key={reel.id}><ReelTile reel={reel} onOpen={openReel} /></li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </>
+          )}
+        </main>
+      </div>
+
+      <BottomNav
+        searching={search !== null}
+        onHome={goHome}
+        onSearch={focusSearch}
+        onSave={() => setSheet("save")}
+        onDevices={() => setSheet("devices")}
+      />
+
+      <input
+        ref={fileInputRef}
+        className="sr-only"
+        type="file"
+        multiple
+        accept={UPLOAD_ACCEPT}
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={onFilesChosen}
+      />
 
       {selectedReel && (
-        <ReelModal 
-          reel={selectedReel} 
-          onClose={() => setSelectedReel(null)} 
-          onDeleteSuccess={() => handleReelDelete(selectedReel.id)} 
+        <ReelDetail reel={selectedReel} onClose={() => setSelectedReel(null)} onDeleted={handleDeleted} />
+      )}
+
+      {sheet === "save" && (
+        <SaveSheet
+          onClose={() => setSheet(null)}
+          onSaveLink={(url) => { setSheet(null); startSave(url); }}
+          onChooseFiles={() => chooseFiles()}
         />
       )}
 
-      {showSyncModal && (
-        <div className="fixed inset-0 bg-on-background/40 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fade-in" onClick={() => setShowSyncModal(false)}>
-          <div 
-            className="bg-surface rounded-lg border border-outline-variant/50 max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-fade-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <header className="px-6 py-4 border-b border-outline-variant/30 flex justify-between items-center bg-surface-container-low">
-              <div>
-                <h2 className="font-headline-sm text-on-surface font-bold">Sync Devices</h2>
-                <p className="text-xs text-on-surface-variant font-medium mt-1">Access this library on your phone or other browsers.</p>
-              </div>
-              <button 
-                className="p-2 hover:bg-primary/5 rounded-full transition-all text-on-surface-variant hover:text-primary" 
-                onClick={() => setShowSyncModal(false)}
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </header>
-
-            <div className="p-6 overflow-y-auto space-y-6 custom-scrollbar text-sm">
-              {/* Generate Sync Link / Code section */}
-              <div className="space-y-4">
-                <h3 className="font-bold text-xs uppercase tracking-wider text-primary">1. Scan QR Code on your Phone</h3>
-                <p className="text-xs text-on-surface-variant leading-relaxed">
-                  Scan this QR code with your iPhone camera to instantly open and sync this exact library in Safari.
-                </p>
-                
-                {syncLink ? (
-                  <div className="flex justify-center p-4 bg-white rounded-lg border border-outline-variant/30 w-fit mx-auto shadow-sm">
-                    <img 
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
-                        syncLink
-                      )}`} 
-                      alt="Sync QR Code"
-                      className="w-[180px] h-[180px]"
-                    />
-                  </div>
-                ) : (
-                  <div className="text-center py-8 text-on-surface-variant">
-                    Generating secure token...
-                  </div>
-                )}
-              </div>
-
-              <div className="border-t border-outline-variant/30 pt-4 space-y-3">
-                <h3 className="font-bold text-xs uppercase tracking-wider text-primary">2. Share Sync Link</h3>
-                <p className="text-xs text-on-surface-variant leading-relaxed">
-                  Copy and send this link to your phone or paste it in another browser:
-                </p>
-                
-                <div className="flex items-center gap-2 bg-surface-container-high rounded px-3 py-2 font-mono text-xs">
-                  <span className="truncate flex-grow">
-                    {syncLink || "Loading..."}
-                  </span>
-                  {syncLink && (
-                    <button 
-                      onClick={() => {
-                        copyToClipboard(syncLink, setCopiedSyncLink);
-                      }}
-                      className="text-primary hover:text-primary/80 shrink-0"
-                      type="button"
-                      title="Copy Link"
-                    >
-                      <span className="material-symbols-outlined text-[18px]">
-                        {copiedSyncLink ? "check" : "content_copy"}
-                      </span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="border-t border-outline-variant/30 pt-4 space-y-3">
-                <h3 className="font-bold text-xs uppercase tracking-wider text-primary">3. Import a Sync Code / Link</h3>
-                <p className="text-xs text-on-surface-variant leading-relaxed">
-                  Already have a Sync Link or Token from another device? Paste it here to load that library:
-                </p>
-
-                <form 
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    if (!pastedSyncCode.trim()) return;
-                    setSyncError("");
-                    setSyncSuccess(false);
-
-                    try {
-                      await importSyncInput(pastedSyncCode);
-                      setSyncSuccess(true);
-                      setPastedSyncCode("");
-                      setTimeout(() => {
-                        setShowSyncModal(false);
-                        setSyncSuccess(false);
-                      }, 1500);
-                    } catch (err) {
-                      setSyncError(err instanceof Error ? err.message : "Invalid sync token");
-                    }
-                  }}
-                  className="space-y-3"
-                >
-                  <div className="flex gap-2">
-                    <input 
-                      type="text" 
-                      placeholder="Paste Sync Link or Token here..."
-                      value={pastedSyncCode}
-                      onChange={(e) => setPastedSyncCode(e.target.value)}
-                      className="flex-grow bg-surface-container-high border border-outline-variant focus:ring-primary rounded px-4 py-2 text-xs outline-none"
-                    />
-                    <button 
-                      type="submit"
-                      className="bg-primary text-on-primary px-5 py-2 rounded-full font-label-md text-label-md bouncy-interaction shadow-md hover:bg-primary/95 transition-all text-xs"
-                    >
-                      Import
-                    </button>
-                  </div>
-                  {syncSuccess && (
-                    <p className="text-tertiary font-bold text-xs flex items-center gap-1">
-                      <span className="material-symbols-outlined text-[16px]">check_circle</span>
-                      Library synced successfully!
-                    </p>
-                  )}
-                  {syncError && (
-                    <p className="text-error font-bold text-xs flex items-center gap-1">
-                      <span className="material-symbols-outlined text-[16px]">error</span>
-                      {syncError}
-                    </p>
-                  )}
-                </form>
-              </div>
-            </div>
-          </div>
-        </div>
+      {sheet === "devices" && (
+        <DevicesSheet
+          userId={session.userId}
+          onClose={() => setSheet(null)}
+          rememberSyncIdentity={session.rememberSyncIdentity}
+          adoptSyncIdentity={session.adoptSyncIdentity}
+          importSupabaseSync={session.importSupabaseSync}
+        />
       )}
+
+      <Toasts toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

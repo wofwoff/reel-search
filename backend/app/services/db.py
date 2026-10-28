@@ -389,16 +389,18 @@ class ReelRepository:
             for row in collection_rows
         ]
 
-    def list_collection_reels(self, collection_id: UUID, user_id: str, limit: int = 8) -> list[ReelOut]:
+    def list_collection_reels(
+        self, collection_id: UUID, user_id: str, limit: int = 8, offset: int = 0
+    ) -> list[ReelOut]:
         with self._connect() as conn:
             rows = conn.execute(
                 REEL_SELECT
                 + """
                 where c.id = %s and c.user_id = %s
-                order by r.created_at desc
-                limit %s
+                order by r.created_at desc, r.id desc
+                limit %s offset %s
                 """,
-                (collection_id, user_id, limit),
+                (collection_id, user_id, limit, offset),
             ).fetchall()
         return [_reel_from_row(row) for row in rows]
 
