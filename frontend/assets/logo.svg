@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f86ff"/>
+      <stop offset="1" stop-color="#0050d6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <!-- bookmark ribbon with the play triangle cut out -->
+  <path fill="#ffffff" fill-rule="evenodd" d="M312 176h400a40 40 0 0 1 40 40v616a24 24 0 0 1-38 19L512 704 310 851a24 24 0 0 1-38-19V216a40 40 0 0 1 40-40z M452 330v212l186-106z"/>
+</svg>
