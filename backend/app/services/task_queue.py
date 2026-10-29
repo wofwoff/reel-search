@@ -26,7 +26,9 @@ class CloudTasksQueue:
             self._client = tasks_v2.CloudTasksClient()
         return self._client
 
-    def enqueue(self, job_id: str) -> None:
+    def enqueue(self, job_id: str, retry_key: str | None = None) -> None:
+        """Queue a job. Pass a fresh retry_key to re-dispatch a job whose earlier task is gone:
+        Cloud Tasks refuses a reused task name for about an hour after that task finishes."""
         from google.api_core.exceptions import AlreadyExists
         from google.cloud import tasks_v2
         from google.protobuf import duration_pb2
@@ -35,8 +37,8 @@ class CloudTasksQueue:
         parent = self.client.queue_path(s.google_cloud_project, s.tasks_location, s.tasks_queue)
         base = s.tasks_worker_url.rstrip("/")
         task = tasks_v2.Task(
-            # A deterministic name makes enqueueing idempotent per job.
-            name=f"{parent}/tasks/ingest-{job_id}",
+            # A deterministic name makes enqueueing idempotent per job (and per recovery).
+            name=f"{parent}/tasks/ingest-{job_id}" + (f"-{retry_key}" if retry_key else ""),
             http_request=tasks_v2.HttpRequest(
                 http_method=tasks_v2.HttpMethod.POST,
                 url=f"{base}{WORKER_PATH}/{job_id}",

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 import json
@@ -13,9 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.schemas import CollectionOut, HealthResponse, JobOut, LibraryCountOut, SaveResponse, SearchRequest, SearchResult, ReelOut, SyncTokenResponse
 from app.services.auth import create_sync_token, get_current_user_id, is_valid_sync_token
-from app.services.db import DatabaseError, ReelRepository
+from app.services.db import JOB_LEASE_SECONDS, DatabaseError, ReelRepository
 from app.services.embedder import EmbeddingError, VertexEmbeddingProvider
-from app.services.ingest import run_ingest_job, run_ingest_job_with_retries
+from app.services.ingest import JobLeaseHeld, run_ingest_job, run_ingest_job_with_retries
 from app.services.task_queue import CloudTasksQueue, verify_worker_request
 from app.services.storage import GcsStorage, StorageError, guess_mime_type
 from app.services.thumbnail import generate_thumbnail
@@ -23,6 +24,10 @@ from app.services.url_utils import canonicalize_url, is_instagram_url, is_youtub
 from app.services.collections import build_collections
 
 settings = get_settings()
+
+# Uploads are copied to disk in chunks; Cloud Run's /tmp is memory-backed, so cap what one request can stage.
+MAX_UPLOAD_BYTES = 250 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 app = FastAPI(title="Reel Search API", version="0.1.0")
 
@@ -161,6 +166,38 @@ def job_out(job: dict, user_id: str) -> JobOut:
     )
 
 
+async def dispatch_job(job: dict, background_tasks: BackgroundTasks, retry_key: str | None = None) -> None:
+    """Hand a queued job to Cloud Tasks, or run it in-process when no queue is configured."""
+    if settings.uses_cloud_tasks:
+        try:
+            await run_in_threadpool(task_queue.enqueue, str(job["id"]), retry_key)
+        except Exception as exc:
+            logging.exception("Failed to enqueue ingest job %s", job["id"])
+            await run_in_threadpool(repository.fail_job, job["id"], "Could not queue the job")
+            raise HTTPException(status_code=503, detail="Could not queue the reel for processing") from exc
+    else:
+        background_tasks.add_task(run_in_threadpool, run_ingest_inline, job["id"])
+
+
+async def recover_if_stale(job: dict, background_tasks: BackgroundTasks) -> dict:
+    """Re-dispatch an in-flight job that has sat untouched for a whole lease.
+
+    That means its worker died and Cloud Tasks gave up on (or lost) the task. Without this the job
+    would stay in flight forever and, through the one-active-job-per-URL index, block re-saving that URL.
+    """
+    if job["status"] not in ("queued", "processing"):
+        return job
+    if job["updated_at"] > datetime.now(timezone.utc) - timedelta(seconds=JOB_LEASE_SECONDS):
+        return job
+    recovered = await run_in_threadpool(repository.recover_stale_job, job["id"], settings.ingest_max_attempts)
+    if recovered is None:
+        return job  # not stale after all, or another request recovered it first
+    logging.warning("Recovered stale ingest job %s (attempts=%s)", job["id"], recovered["attempts"])
+    if recovered["status"] == "queued":
+        await dispatch_job(recovered, background_tasks, retry_key=f"r{int(time())}")
+    return recovered
+
+
 def run_ingest_inline(job_id: UUID) -> None:
     run_ingest_job_with_retries(
         job_id,
@@ -202,7 +239,15 @@ async def save_reel(
                 suffix = Path(f.filename or "file.mp4").suffix or ".mp4"
                 local_path = Path(temp_dir) / f"upload_{idx}{suffix}"
                 with open(local_path, "wb") as buffer:
-                    buffer.write(await f.read())
+                    total = sum(p.stat().st_size for p in local_paths)
+                    while chunk := await f.read(UPLOAD_CHUNK_BYTES):
+                        total += len(chunk)
+                        if total > MAX_UPLOAD_BYTES:
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"Uploads are limited to {MAX_UPLOAD_BYTES // (1024 * 1024)} MB in total",
+                            )
+                        buffer.write(chunk)
                 local_paths.append(local_path)
             if len(local_paths) == 1:
                 uri, _ = await run_in_threadpool(storage_client.upload_video, local_paths[0])
@@ -220,15 +265,10 @@ async def save_reel(
     )
 
     if job["status"] == "queued" and job["attempts"] == 0:
-        if settings.uses_cloud_tasks:
-            try:
-                await run_in_threadpool(task_queue.enqueue, str(job["id"]))
-            except Exception as exc:
-                logging.exception("Failed to enqueue ingest job %s", job["id"])
-                await run_in_threadpool(repository.fail_job, job["id"], "Could not queue the job")
-                raise HTTPException(status_code=503, detail="Could not queue the reel for processing") from exc
-        else:
-            background_tasks.add_task(run_in_threadpool, run_ingest_inline, job["id"])
+        await dispatch_job(job, background_tasks)
+    else:
+        # A repeat save of a URL that is already in flight: revive it if its worker died.
+        job = await recover_if_stale(job, background_tasks)
 
     return SaveResponse(
         job=await run_in_threadpool(job_out, job, user_id),
@@ -238,10 +278,16 @@ async def save_reel(
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobOut)
-async def get_job(job_id: UUID, user_id: str = Depends(get_current_user_id)) -> JobOut:
+async def get_job(
+    job_id: UUID,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id),
+) -> JobOut:
     job = await run_in_threadpool(repository.get_job, job_id, user_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+    # The app polls this while a save is pending, which makes it a natural place to notice a stuck job.
+    job = await recover_if_stale(job, background_tasks)
     return await run_in_threadpool(job_out, job, user_id)
 
 
@@ -249,16 +295,38 @@ async def get_job(job_id: UUID, user_id: str = Depends(get_current_user_id)) -> 
 async def ingest_worker(job_id: UUID, authorization: str | None = Header(default=None)):
     """Cloud Tasks target. A non-2xx response makes Cloud Tasks retry with backoff."""
     verify_worker_request(authorization, settings)
-    outcome = await run_in_threadpool(
-        run_ingest_job,
-        job_id,
-        repository=repository,
-        embedder=embedder,
-        storage=storage_client,
-        settings=settings,
-        after_save=recluster_user_collections,
-    )
+    try:
+        outcome = await run_in_threadpool(
+            run_ingest_job,
+            job_id,
+            repository=repository,
+            embedder=embedder,
+            storage=storage_client,
+            settings=settings,
+            after_save=recluster_user_collections,
+        )
+    except JobLeaseHeld as exc:
+        # Non-2xx so Cloud Tasks keeps the task and retries after the current lease runs out.
+        raise HTTPException(status_code=409, detail="Job is leased by another worker") from exc
     return {"job_id": str(job_id), "outcome": outcome}
+
+
+@app.post("/internal/sweep-jobs")
+async def sweep_stale_jobs(background_tasks: BackgroundTasks, authorization: str | None = Header(default=None)):
+    """Cloud Scheduler target. Recovers stuck jobs nobody is polling (tab closed, task retries exhausted)."""
+    verify_worker_request(authorization, settings)
+    counts = {"requeued": 0, "failed": 0, "errors": 0}
+    for job in await run_in_threadpool(repository.list_stale_jobs):
+        try:
+            recovered = await recover_if_stale(job, background_tasks)
+        except Exception:
+            # One job that can't be re-dispatched (recover_if_stale has already failed it) shouldn't stop the sweep.
+            logging.exception("Sweeper could not recover ingest job %s", job["id"])
+            counts["errors"] += 1
+            continue
+        if recovered is not job:
+            counts["requeued" if recovered["status"] == "queued" else "failed"] += 1
+    return counts
 
 
 @app.get("/api/thumbnails/{filename}")
@@ -313,11 +381,13 @@ async def save_reel_shortcut(
     token: str = Form(...),
     user_id: str = Form(...),
 ) -> SaveResponse:
-    # Accept either the global shortcut_token OR a valid user-specific sync_token
-    is_global_valid = settings.shortcut_token and token == settings.shortcut_token
-    is_sync_valid = is_valid_sync_token(user_id, token)
-    
-    if not (is_global_valid or is_sync_valid):
+    # Only a per-user sync token is accepted: it is signed over the user ID, so it proves which
+    # library the save belongs to. (The bare SHORTCUT_TOKEN would let its holder write to any user_id.)
+    try:
+        user_id = str(UUID(user_id))
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid shortcut token") from None
+    if not is_valid_sync_token(user_id, token):
         raise HTTPException(status_code=401, detail="Invalid shortcut token")
     return await save_reel(response=response, background_tasks=background_tasks, url=url, files=[], user_id=user_id)
 
