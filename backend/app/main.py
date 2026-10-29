@@ -126,9 +126,10 @@ def list_collections(user_id: str = Depends(get_current_user_id)) -> list[Collec
 def list_collection_reels(
     collection_id: UUID,
     limit: int = Query(default=8, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
     user_id: str = Depends(get_current_user_id),
 ) -> list[ReelOut]:
-    return repository.list_collection_reels(collection_id, user_id, limit)
+    return repository.list_collection_reels(collection_id, user_id, limit, offset)
 
 
 @app.post("/api/collections/recluster", response_model=list[CollectionOut])

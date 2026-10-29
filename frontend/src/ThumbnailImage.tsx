@@ -1,4 +1,5 @@
 import { useState } from "react";
+import Icon from "./Icon";
 
 type ThumbnailImageProps = {
   src: string;
@@ -10,12 +11,10 @@ export default function ThumbnailImage({ src, alt = "", className }: ThumbnailIm
   const [failed, setFailed] = useState(false);
 
   if (failed) {
+    // Instagram CDN thumbnails expire; show a neutral placeholder instead of a broken image.
     return (
-      <span
-        className="material-symbols-outlined text-[36px] text-outline fallback-icon"
-        aria-hidden="true"
-      >
-        video_library
+      <span className="thumb-fallback" aria-hidden="true">
+        <Icon name="film" size={28} />
       </span>
     );
   }

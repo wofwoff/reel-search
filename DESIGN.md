@@ -2,51 +2,56 @@
 
 ## Theme
 
-Warm, restrained product UI. A true content surface with terracotta actions and muted green semantic accents. The interface uses generous whitespace and editorial hierarchy without turning the product into a marketing page.
+"Meta feed": the familiar light look of Meta's apps (Instagram and Facebook), applied to a personal reel library. A grey ground with white cards, one blue accent, pill-shaped controls and tall reel tiles. The ReelMind name and play-dot mark stay; never use Meta logos or assets.
 
 ## Color
 
-- Background: `#fff8f6`
-- Primary ink: `#221a16`
-- Primary action: `#94492e`
-- Primary container: `#ff9e7d`
-- Secondary surface: `#fff1ec`
-- Elevated surface: `#ffffff`
-- Border: `#dac1ba`
-- Muted text: `#54433d`
-- Positive/domain accent: `#3a6758`
-- Error: `#ba1a1a`
+All tokens live at the top of `frontend/src/styles.css`.
 
-Text contrast must meet WCAG AA. The primary color is reserved for actions, active states, and meaningful emphasis.
+- Ground: `#f0f2f5`
+- Surface (cards, top bar, sheets): `#ffffff`
+- Ink: `#1c1e21`
+- Muted text: `#65676b` (5.7:1 on white)
+- Hairline: `#dadde1`
+- Chip / secondary button: `#e4e6eb` (hover `#d8dadf`)
+- Accent (primary buttons, brand, active tab): `#0866ff`, white text on it (4.6:1)
+- Link / active text: `#0064e0`
+- Accent tint (selected rows, chips, pending tiles): `#e7f0ff`
+- Danger: `#c42b1c` on `#fdecea`
+
+The accent marks actions, the active state and "new" only, never decoration. Text meets WCAG AA.
 
 ## Typography
 
-Use Outfit across headings, body copy, labels, and controls. Keep product headings fixed and responsive by breakpoint rather than fluid. Body copy is 16px with approximately 1.6 line height and a maximum readable line length of 65–75 characters.
+The system font stack (`-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial`), so the app looks native on iPhone and loads no web font. Body text is 15px; inputs are 16px on phones so iOS doesn't zoom. Headings are bold: 18px for card titles, 22px for "Library", 24px for the reel title.
 
-## Shape and Elevation
+## Shape and elevation
 
-- Collection and utility cards: 16px maximum radius.
-- Buttons and compact filters: full pill when the control benefits from it.
-- Prefer a subtle border or a compact shadow, never both as decoration.
-- Avoid nested cards.
+- Cards: 12px radius, `0 1px 2px rgb(0 0 0 / .1)`, no border.
+- Search and the in-box action button are full pills; buttons are 8px-radius rectangles.
+- Reel tiles are 9:16 with a 10px radius. On phones, collection grids switch to edge-to-edge 3:4 tiles with 2px gaps, like an Instagram profile.
+- Sheets and dialogs use the raised shadow; nothing else does.
 
 ## Layout
 
-- Adaptive application shell: approximately 94% viewport width with responsive 16–48px gutters and a 1680px cap.
-- Reading copy remains independently capped at 65–75 characters.
-- Hero: centered text and save form; no oversized logo artwork.
-- Utility tools: two-column row on desktop, single column on mobile.
-- Collection gallery: one column on phones, two on tablets/compact desktop, and three on MacBook/large desktop where cards remain at least 340px wide.
-- Reel results/detail grid: auto-fit from 280px card width, up to four columns on large displays.
-- Each collection card previews at most three reel thumbnails.
+- **Top bar** (sticky): wordmark, the omnibox (a link saves it, anything else searches) and Save reel. On desktop it also has the Upload and Devices buttons.
+- **Below 640px:** cards run edge to edge with an 8px grey gap between them. The omnibox wraps under the wordmark, and a fixed bottom tab bar holds Home, Search, Save and Devices.
+- **640–959px:** cards float on the grey ground; still no sidebar.
+- **960px and up:** a sticky 280px sidebar (Recent saves, every collection with its cover and count, Regroup, Devices) next to the feed; no tab bar. Content caps at 1480px.
+- **Home order:** Recent saves (a horizontal row; saves in progress first), then the whole library, one card per collection holding every reel.
+- iOS safe-area insets pad the top bar, tab bar and sheets.
 
-## Interaction and Motion
+## Components
 
-- Most transitions run 150–250ms with a smooth ease-out curve.
-- Motion communicates hover, focus, loading, expansion, or selection only.
-- Every animation has a reduced-motion alternative.
-- Collection cards, search, save, sync, Shortcut setup, and delete actions remain keyboard accessible.
+- **Reel tile:** thumbnail, then a two-line title (hidden in the phone grid, where the title is only in the `aria-label`). A blue dot means the reel was saved in the last 7 days and not yet opened on this device. Search results add a match percentage.
+- **Pending tile:** tinted blue with a spinner and its status (Sending, Uploading, Queued, Analyzing). A failed save turns red, shows the error (3 lines max) and offers Add file / dismiss.
+- **Sheets:** bottom sheets on phones and centered dialogs from 640px. Each has a title and a close button, closes on Escape or a backdrop click, traps focus and returns focus to where it came from.
+- **Toasts:** dark, bottom-center, short; at most one action ("View").
 
-## Content Model
+## Motion
 
-Every collection displays a broad domain, a specific topic name, a short description of what the reels discuss, its full reel count, and two or three lightweight thumbnail previews.
+150–250ms with an ease-out curve; only for hover, press, sheets appearing and loading. `prefers-reduced-motion` removes it all.
+
+## Content model
+
+Each collection shows its broad domain, its specific topic, its reel count and a short description (from tablet width up). Then come all of its reels, loaded 24 at a time as the section nears the viewport.
