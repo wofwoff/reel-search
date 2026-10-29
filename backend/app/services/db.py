@@ -16,6 +16,12 @@ class DatabaseError(RuntimeError):
     pass
 
 
+# How long a claimed job belongs to its worker. Must outlast the Cloud Run request timeout
+# (1500s, matching the Cloud Tasks dispatch deadline) so a live first run is never re-claimed.
+JOB_LEASE_SECONDS = 1800
+STALE_JOB_ERROR = "Processing took too long. Please try again."
+
+
 def vector_literal(values: Sequence[float]) -> str:
     return "[" + ",".join(f"{float(value):.9f}" for value in values) + "]"
 
@@ -230,8 +236,7 @@ class ReelRepository:
                 "select * from ingest_jobs where id = %s and user_id = %s", (job_id, user_id)
             ).fetchone()
 
-    def claim_job(self, job_id: UUID, lease_seconds: int = 1800) -> dict[str, Any] | None:
-        # Must outlast the Cloud Tasks dispatch deadline (1500s) so a slow first run isn't re-claimed.
+    def claim_job(self, job_id: UUID, lease_seconds: int = JOB_LEASE_SECONDS) -> dict[str, Any] | None:
         """Move a job to processing. Returns None if it is done or another worker holds the lease."""
         with self._connect() as conn:
             row = conn.execute(
@@ -244,6 +249,31 @@ class ReelRepository:
                 returning *
                 """,
                 (job_id, lease_seconds),
+            ).fetchone()
+            conn.commit()
+        return row
+
+    def recover_stale_job(
+        self, job_id: UUID, max_attempts: int, lease_seconds: int = JOB_LEASE_SECONDS
+    ) -> dict[str, Any] | None:
+        """Reset an in-flight job nobody has touched for a whole lease (its worker or task died).
+
+        Returns the updated row, now queued to be dispatched again (or failed if it is out of
+        attempts), or None when the job is not stale, e.g. because another caller recovered it first.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                update ingest_jobs
+                set status = case when attempts >= %(max)s then 'failed' else 'queued' end,
+                    error = case when attempts >= %(max)s then %(error)s else error end,
+                    updated_at = now()
+                where id = %(id)s
+                  and status in ('queued', 'processing')
+                  and updated_at < now() - make_interval(secs => %(lease)s)
+                returning *
+                """,
+                {"id": job_id, "max": max_attempts, "error": STALE_JOB_ERROR, "lease": lease_seconds},
             ).fetchone()
             conn.commit()
         return row

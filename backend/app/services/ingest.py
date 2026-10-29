@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 GENERIC_ERROR = "Processing failed. Please try again."
 
 
+class JobLeaseHeld(RuntimeError):
+    """Another worker holds the job's lease. The caller should retry later rather than drop the job."""
+
+
 def _public_error(exc: Exception) -> str:
     """Job errors are shown to users; keep internals (URIs, SQL, Vertex details) in server logs only."""
     return str(exc) if isinstance(exc, MediaDownloadError) else GENERIC_ERROR
@@ -186,6 +190,11 @@ def run_ingest_job(
     """Process one job. Returns "skipped", "succeeded" or "failed"; raises to request a retry."""
     job = repository.claim_job(job_id)
     if job is None:
+        current = repository.get_job(job_id)
+        if current and current["status"] == "processing":
+            # Not finished, just leased. If that worker died, acking here would strand the job,
+            # so make the task retry until the lease expires and this delivery can claim it.
+            raise JobLeaseHeld(f"Job {job_id} is leased by another worker")
         return "skipped"
 
     try:
@@ -213,6 +222,8 @@ def run_ingest_job_with_retries(job_id: UUID, **kwargs: Any) -> str:
     for _ in range(max(1, settings.ingest_max_attempts)):
         try:
             return run_ingest_job(job_id, **kwargs)
+        except JobLeaseHeld:
+            return "skipped"  # another in-process run owns it
         except Exception:
             continue
     return "failed"

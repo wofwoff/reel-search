@@ -56,7 +56,7 @@ Optional backend env values:
 
 | Variable | Purpose |
 | --- | --- |
-| `SHORTCUT_TOKEN` | Secret used to sign sync tokens (`POST /api/sync-token`) and to authorize `POST /api/reels/shortcut`. Required for the iOS app / Shortcut sync. |
+| `SHORTCUT_TOKEN` | Secret used to sign sync tokens (`POST /api/sync-token`). `POST /api/reels/shortcut` accepts only a sync token, not this secret itself. Required for the iOS app / Shortcut sync. |
 | `TASKS_QUEUE`, `TASKS_LOCATION`, `TASKS_WORKER_URL`, `TASKS_INVOKER_SERVICE_ACCOUNT` | Enable Cloud Tasks ingestion. All of `TASKS_QUEUE`, `TASKS_WORKER_URL`, `TASKS_INVOKER_SERVICE_ACCOUNT` and `GOOGLE_CLOUD_PROJECT` must be set; otherwise jobs run in-process. |
 | `INGEST_MAX_ATTEMPTS` | Attempts per job before it is marked failed (default 3). |
 | `YT_DLP_COOKIE_FILE`, `YT_DLP_COOKIES_FROM_BROWSER` | Cookies for restricted Instagram reels. |

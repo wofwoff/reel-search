@@ -117,3 +117,25 @@ def test_save_shortcut_valid_sync_token(client):
     finally:
         settings.shortcut_token = original_token
 
+
+
+def test_save_shortcut_rejects_the_global_token(client):
+    # The shared secret signs sync tokens; on its own it must not let anyone write to an arbitrary user_id.
+    response = client.post(
+        "/api/reels/shortcut",
+        data={
+            "url": "https://www.instagram.com/reel/123/",
+            "token": get_settings().shortcut_token,
+            "user_id": TEST_USER_ID
+        }
+    )
+    assert response.status_code == 401
+
+
+def test_save_shortcut_rejects_a_malformed_user_id(client):
+    token = create_sync_token("not-a-uuid", int(time()) + 3600)
+    response = client.post(
+        "/api/reels/shortcut",
+        data={"url": "https://www.instagram.com/reel/123/", "token": token, "user_id": "not-a-uuid"}
+    )
+    assert response.status_code == 401
