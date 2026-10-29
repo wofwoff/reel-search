@@ -119,5 +119,42 @@ def test_collection_reels_query_is_scoped_to_owner():
     query, params = connection.queries[0]
     normalized = " ".join(query.split())
     assert "c.user_id = %s" in normalized
-    assert "limit %s" in normalized
-    assert params == (UUID(COLLECTION_ID), TEST_USER_ID, 8)
+    assert "limit %s offset %s" in normalized
+    assert params == (UUID(COLLECTION_ID), TEST_USER_ID, 8, 0)
+
+
+def test_collection_reels_pages_with_stable_order():
+    connection = FakeConnection([[reel_row(2)]])
+    repo = ReelRepository(Settings(DATABASE_URL="postgresql://example"))
+    repo._connect = lambda: connection
+
+    repo.list_collection_reels(UUID(COLLECTION_ID), TEST_USER_ID, limit=24, offset=24)
+
+    query, params = connection.queries[0]
+    normalized = " ".join(query.split())
+    # created_at alone can tie, which would let a reel repeat or vanish between pages.
+    assert "order by r.created_at desc, r.id desc" in normalized
+    assert params == (UUID(COLLECTION_ID), TEST_USER_ID, 24, 24)
+
+
+def test_collection_reels_endpoint_passes_offset(monkeypatch):
+    calls = []
+
+    class FakeRepo:
+        def list_collection_reels(self, collection_id, user_id, limit, offset):
+            calls.append((collection_id, user_id, limit, offset))
+            return []
+
+    monkeypatch.setattr(main, "repository", FakeRepo())
+    main.app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
+
+    try:
+        with TestClient(main.app) as client:
+            ok = client.get(f"/api/collections/{COLLECTION_ID}/reels?limit=24&offset=48")
+            negative = client.get(f"/api/collections/{COLLECTION_ID}/reels?offset=-1")
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert ok.status_code == 200
+    assert calls == [(UUID(COLLECTION_ID), TEST_USER_ID, 24, 48)]
+    assert negative.status_code == 422

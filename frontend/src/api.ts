@@ -86,7 +86,7 @@ export type SyncToken = {
   expires_at: number;
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 export const SYNC_USER_ID_STORAGE_KEY = "reel_search_sync_user_id";
 export const SYNC_TOKEN_STORAGE_KEY = "reel_search_sync_token";
 
@@ -158,10 +158,20 @@ export async function fetchLibraryOverview(): Promise<LibraryOverview> {
   };
 }
 
-export async function fetchCollectionReels(collectionId: string): Promise<Reel[]> {
+/** The newest reels in the library (the API caps this at 50). */
+export async function fetchRecentReels(): Promise<Reel[]> {
   const headers = await getAuthHeaders();
+  return parseResponse<Reel[]>(await fetch(`${API_BASE}/api/reels`, { headers }));
+}
+
+export async function fetchCollectionReels(
+  collectionId: string,
+  page?: { limit: number; offset: number }
+): Promise<Reel[]> {
+  const headers = await getAuthHeaders();
+  const query = page ? `?limit=${page.limit}&offset=${page.offset}` : "";
   return parseResponse<Reel[]>(await fetch(
-    `${API_BASE}/api/collections/${encodeURIComponent(collectionId)}/reels`,
+    `${API_BASE}/api/collections/${encodeURIComponent(collectionId)}/reels${query}`,
     { headers }
   ));
 }
