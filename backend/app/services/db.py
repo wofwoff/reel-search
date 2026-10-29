@@ -253,6 +253,20 @@ class ReelRepository:
             conn.commit()
         return row
 
+    def list_stale_jobs(self, limit: int = 100, lease_seconds: int = JOB_LEASE_SECONDS) -> list[dict[str, Any]]:
+        """In-flight jobs, across all users, that nobody has touched for a whole lease. Oldest first."""
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                select * from ingest_jobs
+                where status in ('queued', 'processing')
+                  and updated_at < now() - make_interval(secs => %s)
+                order by updated_at asc
+                limit %s
+                """,
+                (lease_seconds, limit),
+            ).fetchall()
+
     def recover_stale_job(
         self, job_id: UUID, max_attempts: int, lease_seconds: int = JOB_LEASE_SECONDS
     ) -> dict[str, Any] | None:

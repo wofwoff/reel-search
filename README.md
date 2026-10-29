@@ -17,7 +17,7 @@ A personal semantic search engine for Instagram reels. Paste a reel URL or uploa
 
 `POST /api/reels` stages any uploaded files, records an `ingest_jobs` row and returns `202` with a job. A worker then downloads the media, uploads it to GCS, embeds it, generates a summary and thumbnail, saves the reel, and refreshes your collections. The frontend polls `GET /api/jobs/{id}` until the job succeeds or fails.
 
-- In production the API enqueues a Cloud Tasks task that calls back to `POST /internal/ingest/{job_id}` on the same service. Failed attempts are retried (up to `INGEST_MAX_ATTEMPTS`, default 3).
+- In production the API enqueues a Cloud Tasks task that calls back to `POST /internal/ingest/{job_id}` on the same service. Failed attempts are retried (up to `INGEST_MAX_ATTEMPTS`, default 3). Jobs stuck in flight after a worker dies are requeued by a Cloud Scheduler job that calls `POST /internal/sweep-jobs` every 10 minutes (one-time setup: `scripts/setup-ingest-sweeper.sh`).
 - Locally, with no `TASKS_QUEUE` set, the job runs in-process in a background task with the same retry behavior.
 
 ## Setup

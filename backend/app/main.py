@@ -311,6 +311,24 @@ async def ingest_worker(job_id: UUID, authorization: str | None = Header(default
     return {"job_id": str(job_id), "outcome": outcome}
 
 
+@app.post("/internal/sweep-jobs")
+async def sweep_stale_jobs(background_tasks: BackgroundTasks, authorization: str | None = Header(default=None)):
+    """Cloud Scheduler target. Recovers stuck jobs nobody is polling (tab closed, task retries exhausted)."""
+    verify_worker_request(authorization, settings)
+    counts = {"requeued": 0, "failed": 0, "errors": 0}
+    for job in await run_in_threadpool(repository.list_stale_jobs):
+        try:
+            recovered = await recover_if_stale(job, background_tasks)
+        except Exception:
+            # One job that can't be re-dispatched (recover_if_stale has already failed it) shouldn't stop the sweep.
+            logging.exception("Sweeper could not recover ingest job %s", job["id"])
+            counts["errors"] += 1
+            continue
+        if recovered is not job:
+            counts["requeued" if recovered["status"] == "queued" else "failed"] += 1
+    return counts
+
+
 @app.get("/api/thumbnails/{filename}")
 async def get_thumbnail(filename: str):
     try:

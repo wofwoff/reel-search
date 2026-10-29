@@ -317,3 +317,53 @@ def test_upload_over_the_size_cap_is_rejected_before_staging(monkeypatch):
 
     assert res.status_code == 413
     assert staged == []
+
+
+def sweep(monkeypatch, stale, recover, enqueue=None):
+    enable_cloud_tasks(monkeypatch)
+    monkeypatch.setattr(main, "verify_worker_request", lambda *a: None)
+    monkeypatch.setattr(main.repository, "list_stale_jobs", lambda: stale)
+    monkeypatch.setattr(main.repository, "recover_stale_job", recover)
+    monkeypatch.setattr(main.repository, "fail_job", lambda job_id, error: None)
+    enqueued = []
+    monkeypatch.setattr(main.task_queue, "enqueue", enqueue or (lambda job_id, retry_key=None: enqueued.append(job_id)))
+    with TestClient(main.app) as client:
+        res = client.post("/internal/sweep-jobs")
+    return res, enqueued
+
+
+def test_sweeper_requeues_and_fails_stale_jobs_nobody_is_polling(monkeypatch):
+    retry, spent, raced = job_row(), job_row(attempts=3), job_row()
+    outcomes = {
+        retry["id"]: {**retry, "status": "queued"},
+        spent["id"]: {**spent, "status": "failed"},
+        raced["id"]: None,  # a poll recovered it between the listing and this update
+    }
+    res, enqueued = sweep(monkeypatch, [retry, spent, raced], lambda job_id, max_attempts: outcomes[job_id])
+
+    assert res.status_code == 200
+    assert res.json() == {"requeued": 1, "failed": 1, "errors": 0}
+    assert enqueued == [str(retry["id"])]
+
+
+def test_sweeper_keeps_going_when_one_job_cannot_be_dispatched(monkeypatch):
+    first, second = job_row(), job_row()
+    calls = []
+
+    def enqueue(job_id, retry_key=None):
+        calls.append(job_id)
+        if job_id == str(first["id"]):
+            raise RuntimeError("queue down")
+
+    res, _ = sweep(
+        monkeypatch, [first, second], lambda job_id, max_attempts: {**{first["id"]: first, second["id"]: second}[job_id], "status": "queued"},
+        enqueue=enqueue,
+    )
+
+    assert res.json() == {"requeued": 1, "failed": 0, "errors": 1}
+    assert calls == [str(first["id"]), str(second["id"])]
+
+
+def test_sweeper_is_closed_when_cloud_tasks_is_not_configured():
+    with TestClient(main.app) as client:
+        assert client.post("/internal/sweep-jobs").status_code == 404
